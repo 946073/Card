@@ -1,1312 +1,735 @@
-import random
-import copy
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, simpledialog
+import random, copy, socket, threading, json, queue, time
 
-# ==================== 常量 ====================
+# ==================== 基础数据 ====================
 HAND_LIMIT_BASE = 20
 DODGE_SKILLS = {"瞬身闪避", "瞬闪"}
 SHIELD_SKILLS = {"冰墙", "壁垒守护", "坚防"}
 DEFENSE_SKILLS = DODGE_SKILLS | SHIELD_SKILLS
 
-# ==================== 装备模板 ====================
-EQUIPMENT_TEMPLATES = {
-    "加特林":     {"type": "weapon", "universal": True,  "desc": "解除每回合最多2张攻击手牌的限制"},
-    "防弹背心":   {"type": "armor",  "universal": True,  "desc": "每回合首次物理伤害-1"},
-    "能量护盾":   {"type": "armor",  "universal": True,  "desc": "获得1点护盾，破后下回合恢复"},
-    "机械猎犬":   {"type": "accessory","universal": True, "desc": "攻击时1/3概率+1伤害"},
-    "飞行滑板":   {"type": "accessory","universal": True, "desc": "受伤时1/3概率完全闪避"},
-    "重甲犀牛":   {"type": "accessory","universal": True, "desc": "HP上限+1；未攻击则下次伤害-1"},
-    "幽灵马车":   {"type": "accessory","universal": True, "desc": "每回合结束，下回合首次技能伤害-1"},
-    "脉冲炮":     {"type": "weapon", "owner": "冷锋",  "desc": "冷锋：法攻+1，激光CD-1；他人：法攻+1"},
-    "雷羽弓":     {"type": "weapon", "owner": "吕山",  "desc": "吕山：物攻+1、法攻+1；他人：物攻+1"},
-    "火焰之刃":   {"type": "weapon", "owner": "钟离",  "desc": "钟离：物攻+1、HP上限+1；他人：物攻+1"},
-    "熔岩动力戟": {"type": "weapon", "owner": "帝郡",  "desc": "帝郡：灼烧5回合；他人：法攻+1"},
-    "空间之刃":   {"type": "weapon", "owner": "玖恒",  "desc": "玖恒：锁滞双目标；他人：物攻+1"},
-    "寒冰之刃":   {"type": "weapon", "owner": "利刃",  "desc": "利刃：法攻+1、普攻+1、HP上限+1；他人：法攻+1"},
-    "剑匣":       {"type": "weapon", "owner": "秦默",  "desc": "秦默：普攻+1、傀儡双目标；他人：普攻+1"},
-    "剧毒之镰":   {"type": "weapon", "owner": "毒猎",  "desc": "毒猎：大招双目标；他人：物攻+1"},
-    "双枪":       {"type": "weapon", "owner": "枪手",  "desc": "枪手：普攻+1、每回合3张攻击；他人：普攻+1"},
-    "创造之墙":   {"type": "armor",  "owner": "罗伊",  "desc": "罗伊：HP上限+2；他人：HP上限+1"},
-    "烟雾掩护":   {"type": "armor",  "owner": "拾荒者", "desc": "拾荒者：大招+1回合、CD-1；他人：HP上限+1"},
-    "医疗包":     {"type": "accessory","owner": "多斯", "desc": "多斯：一技能CD-2；他人：获得【急救】"},
-}
-
-# ==================== 角色数据 ====================
 CHARACTERS = {
-    "1": {"name": "拾荒者", "hp": 6, "atk": 1, "matk": 1, "desc": "高坦度装备拉扯型坦克", "passive": "拾获：装备栏每类上限3件",
-          "skills": {
-              "1": {"name": "劫掠", "cd": 0, "desc": "消耗2张手牌，偷对手1件装备或1张手牌"},
-              "2": {"name": "废土壁垒", "cd": 5, "desc": "1回合内免疫普通攻击和技能伤害"},
-          }},
+    "1": {"name": "拾荒者", "hp": 6, "atk": 1, "matk": 1, "desc": "高坦度装备拉扯坦克", "passive": "装备上限3件",
+          "skills": {"1": {"name": "劫掠", "cd": 0}, "2": {"name": "废土壁垒", "cd": 5}}},
     "2": {"name": "毒猎", "hp": 5, "atk": 2, "matk": 1, "desc": "持续磨血+资源压制", "passive": "无",
-          "skills": {
-              "1": {"name": "噬血", "cd": 3, "desc": "窃取敌方1点血量，自身回复1点"},
-              "2": {"name": "猎击", "cd": 3, "desc": "对单体造成2点技能伤害"},
-              "3": {"name": "腐毒侵蚀", "cd": 5, "desc": "目标每回合掉1血，持续3回合；目标手牌上限永久-1"},
-          }},
-    "3": {"name": "罗伊", "hp": 5, "atk": 1, "matk": 2, "desc": "法伤抗压型坦克，自带反伤", "passive": "无",
-          "skills": {
-              "1": {"name": "速击", "cd": 3, "desc": "对单体造成1点技能伤害"},
-              "2": {"name": "坚防", "cd": 3, "desc": "抵挡1次伤害并反弹1点（受伤时使用）"},
-              "3": {"name": "坚韧蜕变", "cd": 5, "desc": "永久+1血量上限，+1物攻"},
-          }},
-    "4": {"name": "吕山", "hp": 3, "atk": 2, "matk": 1, "desc": "手牌爆发+单控收割核心", "passive": "无",
-          "skills": {
-              "1": {"name": "瞬身闪避", "cd": 3, "desc": "规避1次伤害（受伤时使用）"},
-              "2": {"name": "电击眩晕", "cd": 3, "desc": "敌方跳过出牌阶段"},
-              "3": {"name": "狂击增幅", "cd": 5, "desc": "下2张攻击手牌伤害翻倍"},
-          }},
-    "5": {"name": "钟离", "hp": 2, "atk": 2, "matk": 2, "desc": "高频小技能输出，全场AOE", "passive": "无",
-          "skills": {
-              "1": {"name": "固本", "cd": 2, "desc": "回复1点血量"},
-              "2": {"name": "剑击", "cd": 2, "desc": "对单体造成2点技能伤害"},
-              "3": {"name": "火焰灼烧", "cd": 5, "desc": "对全体敌人各造成2点伤害"},
-          }},
-    "6": {"name": "利刃", "hp": 3, "atk": 2, "matk": 1, "desc": "纯粹后期成长型输出", "passive": "无",
-          "skills": {
-              "1": {"name": "冰墙", "cd": 3, "desc": "抵挡1次伤害（受伤时使用）"},
-              "2": {"name": "突刺", "cd": 3, "desc": "对单体造成1点技能伤害"},
-              "3": {"name": "寒冰增幅", "cd": 5, "desc": "永久+1物攻，+1法攻"},
-          }},
-    "7": {"name": "枪手", "hp": 4, "atk": 2, "matk": 1, "desc": "冷却压制+回合强控", "passive": "无",
-          "skills": {
-              "1": {"name": "迟滞弹", "cd": 3, "desc": "敌方所有冷却中技能CD+2"},
-              "2": {"name": "禁锢射击", "cd": 3, "desc": "敌方跳过出牌阶段"},
-              "3": {"name": "时空回溯", "cd": 5, "desc": "血量/装备/手牌/冷却/状态回溯到上回合结束"},
-          }},
-    "8": {"name": "帝郡", "hp": 4, "atk": 1, "matk": 2, "desc": "持续减益+伤害转移控场", "passive": "无",
-          "skills": {
-              "1": {"name": "瞬闪", "cd": 3, "desc": "规避1次伤害（受伤时使用）"},
-              "2": {"name": "焚身灼烧", "cd": 3, "desc": "目标每回合掉1血，持续3回合"},
-              "3": {"name": "罪罚锁狱", "cd": 5, "desc": "本回合帝郡受到的伤害全部转移给指定目标"},
-          }},
-    "9": {"name": "冷锋", "hp": 3, "atk": 1, "matk": 2, "desc": "防御兜底+单体高额法伤", "passive": "无",
-          "skills": {
-              "1": {"name": "壁垒守护", "cd": 3, "desc": "抵挡1次伤害（受伤时使用）"},
-              "2": {"name": "激光", "cd": 3, "desc": "对单体造成1点法术技能伤害"},
-              "3": {"name": "浮游炮", "cd": 5, "desc": "对单体造成3点法术技能伤害"},
-          }},
-    "10": {"name": "秦默", "hp": 2, "atk": 2, "matk": 2, "desc": "手牌博弈型辅助，有限复活", "passive": "无",
-          "skills": {
-              "1": {"name": "傀儡术", "cd": 3, "desc": "借用敌方1张手牌使用"},
-              "2": {"name": "锐击", "cd": 3, "desc": "对单体造成2点技能伤害"},
-              "3": {"name": "复生献祭", "cd": 5, "desc": "阵亡时献祭手牌复活（第1次5张，第2次10张，最多2次）"},
-          }},
-    "11": {"name": "玖恒", "hp": 4, "atk": 1, "matk": 1, "desc": "装备拓展+强控+团队增伤", "passive": "无",
-          "skills": {
-              "1": {"name": "拓械", "cd": 3, "desc": "献祭2张手牌，+1额外装备槽（上限3）"},
-              "2": {"name": "锁滞", "cd": 3, "desc": "敌方跳过出牌阶段"},
-              "3": {"name": "战威增幅", "cd": 5, "desc": "本回合自身所有伤害翻倍（上限2倍）"},
-          }},
-    "12": {"name": "多斯", "hp": 3, "atk": 1, "matk": 1, "desc": "全队持续续航核心",
-          "passive": "愈愈光环：存活时己方全体每回合回复1点血量",
-          "skills": {
-              "1": {"name": "愈护", "cd": 3, "desc": "自身回复1点血量"},
-              "2": {"name": "速愈调度", "cd": 3, "desc": "自身一技能CD-2"},
-              "3": {"name": "复生仪式", "cd": 8, "desc": "阵亡时自动复活（每局1次）"},
-          }},
+          "skills": {"1": {"name": "噬血", "cd": 3}, "2": {"name": "猎击", "cd": 3}, "3": {"name": "腐毒侵蚀", "cd": 5}}},
+    "3": {"name": "罗伊", "hp": 5, "atk": 1, "matk": 2, "desc": "法伤抗压坦克", "passive": "无",
+          "skills": {"1": {"name": "速击", "cd": 3}, "2": {"name": "坚防", "cd": 3}, "3": {"name": "坚韧蜕变", "cd": 5}}},
+    "4": {"name": "吕山", "hp": 3, "atk": 2, "matk": 1, "desc": "手牌爆发+单控收割", "passive": "无",
+          "skills": {"1": {"name": "瞬身闪避", "cd": 3}, "2": {"name": "电击眩晕", "cd": 3}, "3": {"name": "狂击增幅", "cd": 5}}},
+    "5": {"name": "钟离", "hp": 2, "atk": 2, "matk": 2, "desc": "高频小技能输出", "passive": "无",
+          "skills": {"1": {"name": "固本", "cd": 2}, "2": {"name": "剑击", "cd": 2}, "3": {"name": "火焰灼烧", "cd": 5}}},
+    "6": {"name": "利刃", "hp": 3, "atk": 2, "matk": 1, "desc": "纯粹后期成长输出", "passive": "无",
+          "skills": {"1": {"name": "冰墙", "cd": 3}, "2": {"name": "突刺", "cd": 3}, "3": {"name": "寒冰增幅", "cd": 5}}},
+    "7": {"name": "枪手", "hp": 4, "atk": 2, "matk": 1, "desc": "冷却压制+强控", "passive": "无",
+          "skills": {"1": {"name": "迟滞弹", "cd": 3}, "2": {"name": "禁锢射击", "cd": 3}, "3": {"name": "时空回溯", "cd": 5}}},
+    "8": {"name": "帝郡", "hp": 4, "atk": 1, "matk": 2, "desc": "持续减益+伤害转移", "passive": "无",
+          "skills": {"1": {"name": "瞬闪", "cd": 3}, "2": {"name": "焚身灼烧", "cd": 3}, "3": {"name": "罪罚锁狱", "cd": 5}}},
+    "9": {"name": "冷锋", "hp": 3, "atk": 1, "matk": 2, "desc": "防御兜底+高额法伤", "passive": "无",
+          "skills": {"1": {"name": "壁垒守护", "cd": 3}, "2": {"name": "激光", "cd": 3}, "3": {"name": "浮游炮", "cd": 5}}},
+    "10": {"name": "秦默", "hp": 2, "atk": 2, "matk": 2, "desc": "手牌博弈+有限复活", "passive": "无",
+          "skills": {"1": {"name": "傀儡术", "cd": 3}, "2": {"name": "锐击", "cd": 3}, "3": {"name": "复生献祭", "cd": 5}}},
+    "11": {"name": "玖恒", "hp": 4, "atk": 1, "matk": 1, "desc": "装备拓展+强控", "passive": "无",
+          "skills": {"1": {"name": "拓械", "cd": 3}, "2": {"name": "锁滞", "cd": 3}, "3": {"name": "战威增幅", "cd": 5}}},
+    "12": {"name": "多斯", "hp": 3, "atk": 1, "matk": 1, "desc": "全队持续续航核心", "passive": "每回合回血",
+          "skills": {"1": {"name": "愈护", "cd": 3}, "2": {"name": "速愈调度", "cd": 3}, "3": {"name": "复生仪式", "cd": 8}}},
 }
 
-# ==================== 卡牌类 ====================
+EQUIPMENT_TEMPLATES = {
+    "加特林": {"type": "weapon", "desc": "解除每回合攻击上限"}, "防弹背心": {"type": "armor", "desc": "首次物理伤害-1"},
+    "能量护盾": {"type": "armor", "desc": "抵挡1点伤害"}, "机械猎犬": {"type": "accessory", "desc": "攻击时1/3概率+1伤害"},
+    "飞行滑板": {"type": "accessory", "desc": "受伤时1/3概率闪避"}, "重甲犀牛": {"type": "accessory", "desc": "HP上限+1"},
+    "幽灵马车": {"type": "accessory", "desc": "下回合首次技能伤害-1"},
+    "脉冲炮": {"type": "weapon", "owner": "冷锋", "desc": "法攻+1"}, "雷羽弓": {"type": "weapon", "owner": "吕山", "desc": "物攻+1"},
+    "火焰之刃": {"type": "weapon", "owner": "钟离", "desc": "物攻+1"}, "熔岩动力戟": {"type": "weapon", "owner": "帝郡", "desc": "法攻+1"},
+    "空间之刃": {"type": "weapon", "owner": "玖恒", "desc": "物攻+1"}, "寒冰之刃": {"type": "weapon", "owner": "利刃", "desc": "法攻+1"},
+    "剑匣": {"type": "weapon", "owner": "秦默", "desc": "普攻+1"}, "剧毒之镰": {"type": "weapon", "owner": "毒猎", "desc": "物攻+1"},
+    "双枪": {"type": "weapon", "owner": "枪手", "desc": "普攻+1"}, "创造之墙": {"type": "armor", "owner": "罗伊", "desc": "HP上限+2"},
+    "烟雾掩护": {"type": "armor", "owner": "拾荒者", "desc": "HP上限+1"}, "医疗包": {"type": "accessory", "owner": "多斯", "desc": "一技能CD-2"},
+}
+
 class Card:
-    def __init__(self, name, card_type, value=0, description="", effect=None):
-        self.name = name
-        self.card_type = card_type
-        self.value = value
-        self.description = description
-        self.effect = effect
+    def __init__(self, name, card_type, value=0, effect=None):
+        self.name = name; self.card_type = card_type; self.value = value; self.effect = effect
+    def __repr__(self): return self.name
+    def to_dict(self): return {"name": self.name, "card_type": self.card_type, "value": self.value, "effect": self.effect}
+    @classmethod
+    def from_dict(cls, d): return cls(d["name"], d["card_type"], d.get("value", 0), d.get("effect"))
 
-    def __repr__(self):
-        return f"{self.name}"
-
-# ==================== 装备类 ====================
 class Equipment:
     def __init__(self, name):
         self.name = name
         tmpl = EQUIPMENT_TEMPLATES.get(name, {})
-        self.equip_type = tmpl.get("type", "accessory")
-        self.is_universal = tmpl.get("universal", False)
-        self.owner = tmpl.get("owner", None)
-        self.desc = tmpl.get("desc", "")
+        self.equip_type = tmpl.get("type", "accessory"); self.owner = tmpl.get("owner", None); self.desc = tmpl.get("desc", "")
+    def __repr__(self): return self.name
 
-    def __repr__(self):
-        return f"{self.name}"
-
-# ==================== 玩家类 ====================
 class Player:
-    def __init__(self, name, hp, atk, matk, char_data):
-        self.name = name
-        self.base_atk = atk
-        self.base_matk = matk
-        self.base_max_hp = hp
-        self.atk = atk
-        self.matk = matk
-        self.max_hp = hp
-        self.hp = hp
-
-        self.hand = []
-        self.char_data = char_data
-        self.char_name = char_data["name"]
+    def __init__(self, pid, pname, char_data):
+        self.pid = pid; self.name = pname; self.char_data = char_data; self.char_name = char_data["name"]
+        self.base_atk = char_data["atk"]; self.base_matk = char_data["matk"]; self.base_max_hp = char_data["hp"]
+        self.atk = self.base_atk; self.matk = self.base_matk; self.max_hp = self.base_max_hp; self.hp = self.base_max_hp
+        self.hand = []; self.equipment = []
         self.cooldowns = {sid: 0 for sid in char_data["skills"]}
+        self.extra_slots = 0; self.immune_turn = False; self.skip_next_turn = False; self.skip_full_turn = False
+        self.poison_turns = 0; self.burn_turns = 0; self.double_attack_left = 0; self.damage_double_turn = False
+        self.meditate_used_this_turn = False; self.duel_turns = 0
+        self.vest_used_this_turn = False; self.energy_shield_hp = 0; self.rhino_shield_available = True
+        self.carriage_buff = False; self.attacked_this_turn = False; self.revive_count = 0
+        self.hand_limit_reduction = 0; self.dodge_tokens = 0; self.extra_attack_tokens = 0
+        self.transfer_active = False; self.alive = True
 
-        self.immune_turn = False
-        self.skip_next_turn = False
-        self.skip_full_turn = False
-        self.poison_turns = 0
-        self.burn_turns = 0
-        self.double_attack_left = 0
-        self.damage_double_turn = False
-        self.meditate_used_this_turn = False
-        self.duel_turns = 0
-        self.extra_slots = 0
-
-        self.equipment = []
-
-        self.vest_used_this_turn = False
-        self.energy_shield_hp = 0
-        self.rhino_shield_available = True
-        self.carriage_buff = False
-        self.attacked_this_turn = False
-
-        self.prev_state = None
-        self.gunner_snapshot = None  # 枪手专用快照
-
-        self.revive_count = 0
-        self.hand_limit_reduction = 0
-        self.dodge_tokens = 0
-        self.extra_attack_tokens = 0
-        self.cd_penalty = 0
-        self.transfer_active = False
-        self.transfer_target = None
-
-    def get_hand_limit(self):
-        return max(1, HAND_LIMIT_BASE - self.hand_limit_reduction)
-
-    def get_state_snapshot(self):
-        return {
-            "hp": self.hp, "equipment": copy.deepcopy(self.equipment),
-            "poison_turns": self.poison_turns, "burn_turns": self.burn_turns,
-            "immune_turn": self.immune_turn, "skip_next_turn": self.skip_next_turn,
-            "skip_full_turn": self.skip_full_turn, "damage_double_turn": self.damage_double_turn,
-            "double_attack_left": self.double_attack_left, "energy_shield_hp": self.energy_shield_hp,
-            "carriage_buff": self.carriage_buff, "vest_used_this_turn": self.vest_used_this_turn,
-            "rhino_shield_available": self.rhino_shield_available, "attacked_this_turn": self.attacked_this_turn,
-        }
-
-    def load_state_snapshot(self, state):
-        self.hp = state["hp"]
-        self.equipment = copy.deepcopy(state["equipment"])
-        self.poison_turns = state["poison_turns"]
-        self.burn_turns = state["burn_turns"]
-        self.immune_turn = state["immune_turn"]
-        self.skip_next_turn = state["skip_next_turn"]
-        self.skip_full_turn = state["skip_full_turn"]
-        self.damage_double_turn = state["damage_double_turn"]
-        self.double_attack_left = state["double_attack_left"]
-        self.energy_shield_hp = state["energy_shield_hp"]
-        self.carriage_buff = state["carriage_buff"]
-        self.vest_used_this_turn = state["vest_used_this_turn"]
-        self.rhino_shield_available = state["rhino_shield_available"]
-        self.attacked_this_turn = state["attacked_this_turn"]
-        self.recalc_stats()
-
-    def save_gunner_snapshot(self):
-        """枪手专用：保存完整状态快照（含手牌、冷却、buff）"""
-        self.gunner_snapshot = {
-            "hp": self.hp,
-            "equipment": copy.deepcopy(self.equipment),
-            "hand": copy.deepcopy(self.hand),
-            "cooldowns": copy.deepcopy(self.cooldowns),
-            "poison_turns": self.poison_turns,
-            "burn_turns": self.burn_turns,
-            "hand_limit_reduction": self.hand_limit_reduction,
-            "immune_turn": self.immune_turn,
-            "skip_next_turn": self.skip_next_turn,
-            "skip_full_turn": self.skip_full_turn,
-            "damage_double_turn": self.damage_double_turn,
-            "double_attack_left": self.double_attack_left,
-            "energy_shield_hp": self.energy_shield_hp,
-            "carriage_buff": self.carriage_buff,
-            "vest_used_this_turn": self.vest_used_this_turn,
-            "rhino_shield_available": self.rhino_shield_available,
-        }
-
-    def recalc_stats(self):
-        atk_bonus = matk_bonus = max_hp_bonus = 0
-        for eq in self.equipment:
-            owner_match = (eq.owner == self.char_name)
-            if eq.name == "重甲犀牛": max_hp_bonus += 1
-            elif eq.name == "脉冲炮": matk_bonus += 1
-            elif eq.name == "雷羽弓":
-                atk_bonus += 1
-                if owner_match: matk_bonus += 1
-            elif eq.name == "火焰之刃":
-                atk_bonus += 1
-                if owner_match: max_hp_bonus += 1
-            elif eq.name == "熔岩动力戟":
-                if not owner_match: matk_bonus += 1
-            elif eq.name == "空间之刃":
-                if not owner_match: atk_bonus += 1
-            elif eq.name == "寒冰之刃":
-                matk_bonus += 1
-                if owner_match: max_hp_bonus += 1
-            elif eq.name == "剧毒之镰":
-                if not owner_match: atk_bonus += 1
-            elif eq.name == "创造之墙":
-                max_hp_bonus += 2 if owner_match else 1
-            elif eq.name == "烟雾掩护":
-                if not owner_match: max_hp_bonus += 1
-
-        self.atk = self.base_atk + atk_bonus
-        self.matk = self.base_matk + matk_bonus
-        self.max_hp = self.base_max_hp + max_hp_bonus
-        if self.hp > self.max_hp:
-            self.hp = self.max_hp
-
-    def equipment_limit(self):
-        return 3 if self.char_name == "拾荒者" else 1
-
-    def count_equipment_type(self, eq_type):
-        return sum(1 for e in self.equipment if e.equip_type == eq_type)
-
-    def can_equip(self, eq):
-        limit = self.equipment_limit()
-        if self.char_name == "玖恒": limit += self.extra_slots
-        return self.count_equipment_type(eq.equip_type) < limit
-
-    def equip(self, eq):
-        self.equipment.append(eq)
-        self.recalc_stats()
-        print(f"⚙ {self.name} 装备了【{eq.name}】（{eq.equip_type}）")
-        print(f"   效果：{eq.desc}")
-
-    def unequip(self, eq):
-        if eq in self.equipment:
-            self.equipment.remove(eq)
-            self.recalc_stats()
-            print(f"🔓 {self.name} 卸下了【{eq.name}】")
-            return True
-        return False
-
-    def has_equipment(self, name):
-        return any(e.name == name for e in self.equipment)
-
+    def get_hand_limit(self): return max(1, HAND_LIMIT_BASE - self.hand_limit_reduction)
     def draw_card(self, card):
-        if len(self.hand) < self.get_hand_limit():
-            self.hand.append(card)
-            return True
+        if len(self.hand) < self.get_hand_limit(): self.hand.append(card); return True
         return False
+    def recalc_stats(self):
+        ab = mb = hb = 0
+        for eq in self.equipment:
+            m = (eq.owner == self.char_name)
+            if eq.name == "重甲犀牛": hb += 1
+            elif eq.name == "脉冲炮": mb += 1
+            elif eq.name == "雷羽弓": ab += 1; mb += 1 if m else 0
+            elif eq.name == "火焰之刃": ab += 1; hb += 1 if m else 0
+            elif eq.name == "熔岩动力戟": mb += 0 if m else 1
+            elif eq.name == "空间之刃": ab += 0 if m else 1
+            elif eq.name == "寒冰之刃": mb += 1; hb += 1 if m else 0
+            elif eq.name == "剧毒之镰": ab += 0 if m else 1
+            elif eq.name == "创造之墙": hb += 2 if m else 1
+            elif eq.name == "烟雾掩护": hb += 0 if m else 1
+        self.atk = self.base_atk + ab; self.matk = self.base_matk + mb
+        self.max_hp = self.base_max_hp + hb
+        if self.hp > self.max_hp: self.hp = self.max_hp
+    def equipment_limit(self): return 3 if self.char_name == "拾荒者" else 1
+    def count_eq(self, t): return sum(1 for e in self.equipment if e.equip_type == t)
+    def can_equip(self, eq):
+        limit = self.equipment_limit() + (self.extra_slots if self.char_name == "玖恒" else 0)
+        return self.count_eq(eq.equip_type) < limit
+    def has_equipment(self, name): return any(e.name == name for e in self.equipment)
+    def to_dict(self, include_hand=False):
+        d = {"pid": self.pid, "name": self.name, "char_name": self.char_name,
+             "hp": self.hp, "max_hp": self.max_hp, "atk": self.atk, "matk": self.matk,
+             "equipment": [e.name for e in self.equipment],
+             "cooldowns": self.cooldowns, "alive": self.alive,
+             "poison_turns": self.poison_turns, "burn_turns": self.burn_turns,
+             "energy_shield_hp": self.energy_shield_hp}
+        if include_hand: d["hand"] = [c.to_dict() for c in self.hand]
+        return d
 
-    def show_hand(self):
-        limit = self.get_hand_limit()
-        print(f"\n{self.name} 的手牌 (HP: {self.hp}/{self.max_hp}, 手牌: {len(self.hand)}/{limit}):")
-        for i, card in enumerate(self.hand):
-            print(f"  [{i}] {card}")
+# ==================== 网络层 ====================
+class NetworkManager:
+    def __init__(self):
+        self.mode = None; self.sock = None
+        self.clients = []  # [(sock, name)]
+        self.msg_queue = queue.Queue()
+        self.running = False
 
-    def show_equipment(self):
-        if not self.equipment:
-            print(f"  {self.name} 无装备")
-            return
-        print(f"  {self.name} 的装备：")
-        for i, eq in enumerate(self.equipment):
-            print(f"    [{i}] {eq.name}（{eq.equip_type}）")
+    def start_server(self, port=5000):
+        self.mode = "host"
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("0.0.0.0", port))
+        self.sock.listen(4); self.running = True
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]; s.close(); return ip
+        except: return "127.0.0.1"
 
-    def is_alive(self):
-        return self.hp > 0
+    def _accept_loop(self):
+        while self.running and len(self.clients) < 3:
+            try:
+                self.sock.settimeout(1.0)
+                conn, addr = self.sock.accept()
+                self.clients.append((conn, "等待..."))
+                threading.Thread(target=self._recv_loop, args=(conn,), daemon=True).start()
+                self.msg_queue.put({"type": "_new_client", "conn": conn})
+            except socket.timeout: continue
+            except: break
 
-    def show_skills(self):
-        print(f"\n{self.name} 的技能:")
-        for sid, sk in self.char_data["skills"].items():
-            cd_left = self.cooldowns.get(sid, 0)
-            status = "就绪" if cd_left == 0 else f"冷却中({cd_left})"
-            tag = ""
-            if sk["name"] in DODGE_SKILLS: tag = " [受伤时/挡任意伤害]"
-            elif sk["name"] in SHIELD_SKILLS: tag = " [受伤时/挡普通或物理]"
-            print(f"  [{sid}] {sk['name']} (CD{sk['cd']}) - {status}{tag}")
-            print(f"        {sk['desc']}")
-        if self.has_equipment("医疗包") and self.char_name != "多斯":
-            cd = self.cooldowns.get("急救", 0)
-            status = "就绪" if cd == 0 else f"冷却中({cd})"
-            print(f"  [急] 【急救】(CD3) - {status}")
-            print(f"        恢复自身1点血量（来自医疗包）")
+    def connect_to_server(self, host, port=5000):
+        self.mode = "client"
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect((host, port)); self.running = True
+        threading.Thread(target=self._recv_loop, args=(self.sock,), daemon=True).start()
+        return True
 
-    def reduce_cooldowns(self):
-        for sid in self.cooldowns:
-            if self.cooldowns[sid] > 0:
-                self.cooldowns[sid] -= 1
+    def _recv_loop(self, conn):
+        buf = b""
+        while self.running:
+            try:
+                data = conn.recv(65536)
+                if not data: break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    try: msg = json.loads(line.decode("utf-8"))
+                    except: continue
+                    msg["_from_conn"] = conn
+                    self.msg_queue.put(msg)
+            except: break
 
-    def reset_turn_flags(self):
-        self.immune_turn = False
-        self.damage_double_turn = False
-        self.meditate_used_this_turn = False
-        self.vest_used_this_turn = False
-        self.attacked_this_turn = False
+    def send(self, conn, msg):
+        try: conn.sendall((json.dumps(msg) + "\n").encode("utf-8"))
+        except: pass
 
-    def on_turn_end(self):
-        self.rhino_shield_available = not self.attacked_this_turn
-        if self.has_equipment("幽灵马车"):
-            self.carriage_buff = True
-        self.transfer_active = False
-        self.transfer_target = None
-        self.extra_attack_tokens = 0
+    def send_to_player(self, pid, msg):
+        if pid == 0: return
+        if pid - 1 < len(self.clients): self.send(self.clients[pid-1][0], msg)
 
-# ==================== 角色选择 ====================
-def show_character_list():
-    print("\n===== 可选角色 =====")
-    for key, ch in CHARACTERS.items():
-        print(f"  {key}. {ch['name']}  HP={ch['hp']}  物攻={ch['atk']}  法攻={ch['matk']}")
-        print(f"      {ch['desc']}")
+    def broadcast_all(self, msg):
+        for c, n in self.clients: self.send(c, msg)
 
-def select_character(player_label):
-    show_character_list()
-    while True:
-        choice = input(f"\n请 {player_label} 输入角色编号 (1-12): ").strip()
-        if choice in CHARACTERS:
-            ch = CHARACTERS[choice]
-            print(f"✔ {player_label} 选择了【{ch['name']}】")
-            print(f"  被动：{ch['passive']}")
-            return Player(name=f"{player_label}-{ch['name']}", hp=ch["hp"], atk=ch["atk"], matk=ch["matk"], char_data=ch)
+# ==================== 游戏主程序 ====================
+class LanGame:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("火柴杀 - 局域网联机版")
+        self.root.geometry("1000x800")
+        self.root.configure(bg="#f0f0f0")
+        self.net = NetworkManager()
+        self.my_id = 0; self.my_name = "玩家"
+        self.role = None; self.game_started = False
+        self.players = []; self.deck = []; self.turn_player_id = 0; self.turn = 1
+        self.attack_cards_used = 0
+        self.pending_ask = None
+        self.setup_ui()
+        self.root.after(100, self.process_network)
+        self.root.after(200, self.ask_mode)
+
+    def setup_ui(self):
+        f = tk.Frame(self.root, bg="#e74c3c", pady=8); f.pack(fill="x")
+        self.label_players = tk.Label(f, text="等待玩家...", font=("微软雅黑", 11, "bold"),
+                                       bg="#e74c3c", fg="white", justify="left", anchor="w")
+        self.label_players.pack(fill="x", padx=10)
+
+        cf = tk.LabelFrame(self.root, text=" 战斗日志 ", font=("微软雅黑", 11), padx=5, pady=5, bg="#f0f0f0")
+        cf.pack(fill="both", expand=True, padx=10, pady=5)
+        self.log_text = scrolledtext.ScrolledText(cf, height=16, font=("微软雅黑", 10), state='disabled')
+        self.log_text.pack(fill="both", expand=True)
+
+        bf = tk.Frame(self.root, bg="#3498db", pady=8); bf.pack(fill="x")
+        self.label_me = tk.Label(bf, text="你: 等待...", font=("微软雅黑", 12, "bold"), bg="#3498db", fg="white")
+        self.label_me.pack()
+
+        hf = tk.LabelFrame(self.root, text=" 手牌 ", font=("微软雅黑", 11), padx=5, pady=5, bg="#f0f0f0")
+        hf.pack(fill="x", padx=10, pady=3)
+        self.frame_hand = hf; self.card_buttons = []
+
+        af = tk.Frame(self.root, bg="#f0f0f0"); af.pack(pady=5)
+        tk.Button(af, text="技能", font=("微软雅黑", 11), width=8, command=self.action_skill).grid(row=0, column=0, padx=3)
+        tk.Button(af, text="装备", font=("微软雅黑", 11), width=8, command=self.action_view_equip).grid(row=0, column=1, padx=3)
+        tk.Button(af, text="结束回合", font=("微软雅黑", 11, "bold"), width=10, bg="#2ecc71", fg="white", command=self.action_end_turn).grid(row=0, column=2, padx=10)
+
+    def log(self, msg):
+        self.log_text.config(state='normal')
+        self.log_text.insert(tk.END, msg + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state='disabled')
+
+    def ask_mode(self):
+        c = messagebox.askyesnocancel("火柴杀联机", "创建房间？\n\n是=主机  否=加入")
+        if c is None: self.root.destroy(); return
+        if c:
+            self.role = "host"; self.my_id = 0
+            ip = self.net.start_server(5000)
+            self.my_name = simpledialog.askstring("昵称", "你的昵称：") or "主机"
+            self.log(f"🏠 房间已创建！IP: {ip}:5000")
+            self.log(f"👤 {self.my_name} (玩家1)")
+            messagebox.showinfo("房间已创建", f"IP: {ip}\n请告诉其他玩家！")
         else:
-            print("无效编号，请重新输入。")
+            self.role = "client"
+            ip = simpledialog.askstring("加入", "主机 IP：")
+            if not ip: self.root.destroy(); return
+            self.my_name = simpledialog.askstring("昵称", "你的昵称：") or "玩家"
+            try:
+                self.net.connect_to_server(ip, 5000)
+                self.net.send(self.net.sock, {"type": "join", "name": self.my_name})
+                self.log(f"🔗 已连接 {ip}")
+            except Exception as e:
+                messagebox.showerror("失败", str(e)); self.root.destroy(); return
+        self.root.after(300, self.check_lobby)
 
-# ==================== 卡组 ====================
-def create_deck():
-    deck = []
-    for _ in range(8):
-        deck.append(Card("普攻·直击", "attack", value=1, description="造成1点伤害"))
-    for _ in range(4):
-        deck.append(Card("普攻·重击", "attack", value=2, description="造成2点伤害"))
-    for _ in range(2):
-        deck.append(Card("普攻·连击", "attack", value=1, description="1点伤害 + 额外普攻", effect="combo"))
-    for _ in range(1):
-        deck.append(Card("普攻·快刺", "attack", value=1, description="1点伤害 + 闪避1次", effect="quick"))
-    for _ in range(2):
-        deck.append(Card("普攻·横扫", "attack", value=1, description="对全体敌人1点", effect="sweep"))
-    for _ in range(1):
-        deck.append(Card("普攻·牵制", "attack", value=1, description="1点伤害 + 目标下回合CD+1", effect="bind"))
-    for _ in range(1):
-        deck.append(Card("普攻·破袭", "attack", value=2, description="2点伤害，无视普通护盾", effect="pierce"))
-    for _ in range(1):
-        deck.append(Card("普攻·浴血", "attack", value=2, description="2点伤害，自身受1点反伤", effect="blood"))
+    def check_lobby(self):
+        if self.role == "host":
+            total = 1 + len(self.net.clients)
+            names = [self.my_name] + [n for c, n in self.net.clients]
+            self.label_players.config(text="玩家列表 (" + str(total) + "/4):\n" + "\n".join(f"  {i+1}. {n}" for i, n in enumerate(names)))
+            if total == 4:
+                self.start_char_select(); return
+        self.root.after(500, self.check_lobby)
 
-    for _ in range(5):
-        deck.append(Card("物理攻击", "physical", description="造成等同物攻的物理伤害"))
-    for _ in range(5):
-        deck.append(Card("法术攻击", "magic", description="造成等同法攻的法术伤害"))
+    def process_network(self):
+        try:
+            while True:
+                msg = self.net.msg_queue.get_nowait()
+                self.handle_msg(msg)
+        except queue.Empty: pass
+        self.root.after(100, self.process_network)
 
-    for _ in range(10):
-        deck.append(Card("疗伤", "heal", value=1, description="恢复1点生命"))
+    def handle_msg(self, msg):
+        t = msg.get("type")
+        if t == "_new_client":
+            self.net.send(msg["conn"], {"type": "welcome", "id": len(self.net.clients)})
+        elif t == "join":
+            name = msg.get("name", "玩家")
+            conn = msg["_from_conn"]
+            for i, (c, n) in enumerate(self.net.clients):
+                if c == conn: self.net.clients[i] = (c, name); break
+            self.log(f"👋 {name} 加入")
+            self.net.broadcast_all({"type": "lobby_update",
+                "names": [self.my_name] + [n for c, n in self.net.clients]})
+        elif t == "lobby_update":
+            names = msg["names"]
+            self.label_players.config(text="玩家列表:\n" + "\n".join(f"  {i+1}. {n}" for i, n in enumerate(names)))
+        elif t == "start_select":
+            self.select_order = msg["order"]; self.cur_select_idx = 0
+            self.available_chars = list(CHARACTERS.keys()); self.picks = {}
+            self.show_select()
+        elif t == "pick_done":
+            self.available_chars = msg["available"]; self.cur_select_idx = msg["idx"]
+            self.log(f"✅ {msg['name']} 选了【{CHARACTERS[msg['cid']]['name']}】")
+            if self.cur_select_idx >= 4:
+                self.net.broadcast_all({"type": "game_begin", "picks": self.picks})
+                self.begin_game(self.picks)
+            else:
+                self.show_select()
+        elif t == "game_begin":
+            self.picks = msg["picks"]; self.begin_game(self.picks)
+        elif t == "ask":
+            self.show_ask_dialog(msg["prompt"], msg["options"])
+        elif t == "answer":
+            if self.pending_ask:
+                self.pending_ask["answer"] = msg["index"]; self.pending_ask["event"].set()
+        elif t == "state":
+            self.sync_state(msg["state"])
+        elif t == "log":
+            self.log(msg["text"])
+        elif t == "game_over":
+            messagebox.showinfo("游戏结束", msg["text"])
+            self.root.destroy()
 
-    for _ in range(10):
-        deck.append(Card("躲闪", "dodge", description="规避单次伤害"))
-    for _ in range(2):
-        deck.append(Card("全能盾牌", "omnishield", description="抵挡伤害/死亡/负面效果"))
+    def start_char_select(self):
+        if self.role != "host": return
+        order = list(range(4)); random.shuffle(order)
+        self.select_order = order; self.cur_select_idx = 0
+        self.available_chars = list(CHARACTERS.keys()); self.picks = {}
+        self.log(f"🎲 选人顺序: {[o+1 for o in order]}")
+        self.net.broadcast_all({"type": "start_select", "order": order})
+        self.show_select()
 
-    for _ in range(3):
-        deck.append(Card("狂暴剂", "rage", description="本回合所有伤害翻倍"))
-    for _ in range(3):
-        deck.append(Card("麻醉剂", "anesthetic", description="敌方跳过下一完整回合"))
-    for _ in range(3):
-        deck.append(Card("沉思", "meditate", description="立刻抽5张牌（每回合限1张）"))
-    for _ in range(7):
-        deck.append(Card("拆除", "dismantle", description="拆除敌方1件装备"))
-    for _ in range(5):
-        deck.append(Card("抢夺", "steal", description="抢夺敌方1件已装备的装备"))
+    def show_select(self):
+        if self.cur_select_idx >= 4: return
+        if self.select_order[self.cur_select_idx] != self.my_id: return
+        text = "\n".join([f"{k}. {CHARACTERS[k]['name']} HP{CHARACTERS[k]['hp']} 物攻{CHARACTERS[k]['atk']} 法攻{CHARACTERS[k]['matk']}"
+                          for k in self.available_chars])
+        c = simpledialog.askinteger("选择角色", f"轮到你！可选:\n{text}\n编号:", minvalue=1, maxvalue=12)
+        if not c or str(c) not in self.available_chars:
+            self.show_select(); return
+        cid = str(c)
+        self.available_chars.remove(cid); self.picks[self.my_id] = cid
+        self.log(f"✅ 你选了【{CHARACTERS[cid]['name']}】")
+        self.cur_select_idx += 1
+        if self.role == "host":
+            self.net.broadcast_all({"type": "pick_done", "available": self.available_chars,
+                                    "idx": self.cur_select_idx, "name": self.my_name, "cid": cid})
+            if self.cur_select_idx >= 4:
+                self.net.broadcast_all({"type": "game_begin", "picks": self.picks})
+                self.begin_game(self.picks)
+            else:
+                self.show_select()
+        else:
+            self.net.send(self.net.sock, {"type": "pick_done", "available": self.available_chars,
+                                          "idx": self.cur_select_idx, "name": self.my_name, "cid": cid})
 
-    deck.append(Card("决斗", "duel", description="决斗3轮，无人阵亡则同归于尽"))
+    def begin_game(self, picks):
+        if self.game_started: return
+        self.game_started = True
+        names = [self.my_name] + [n for c, n in self.net.clients]
+        self.players = []
+        for i in range(4):
+            cid = picks.get(str(i)) or picks.get(i)
+            cd = CHARACTERS[cid]
+            p = Player(i, f"P{i+1}-{cd['name']}", cd)
+            self.players.append(p)
+        self.deck = self.make_deck()
+        for _ in range(3):
+            for p in self.players:
+                if self.deck: p.draw_card(self.deck.pop())
+        self.turn_player_id = random.randint(0, 3)
+        self.turn = 1
+        self.log(f"🎮 游戏开始！先手：玩家{self.turn_player_id+1}")
+        self.refresh_ui()
+        self.broadcast_state()
 
-    for eq_name in EQUIPMENT_TEMPLATES:
-        deck.append(Card(eq_name, "equip", description=EQUIPMENT_TEMPLATES[eq_name]["desc"]))
+    def make_deck(self):
+        d = []
+        for _ in range(8): d.append(Card("普攻·直击", "attack", 1))
+        for _ in range(4): d.append(Card("普攻·重击", "attack", 2))
+        for _ in range(5): d.append(Card("物理攻击", "physical"))
+        for _ in range(5): d.append(Card("法术攻击", "magic"))
+        for _ in range(10): d.append(Card("疗伤", "heal", 1))
+        for _ in range(10): d.append(Card("躲闪", "dodge"))
+        for _ in range(2): d.append(Card("全能盾牌", "omnishield"))
+        for _ in range(3): d.append(Card("狂暴剂", "rage"))
+        for _ in range(3): d.append(Card("麻醉剂", "anesthetic"))
+        for _ in range(3): d.append(Card("沉思", "meditate"))
+        for _ in range(7): d.append(Card("拆除", "dismantle"))
+        for _ in range(5): d.append(Card("抢夺", "steal"))
+        d.append(Card("决斗", "duel"))
+        for eq in EQUIPMENT_TEMPLATES: d.append(Card(eq, "equip"))
+        random.shuffle(d); return d
 
-    random.shuffle(deck)
-    return deck
+    def refresh_ui(self):
+        lines = []
+        for p in self.players:
+            if p.pid == self.my_id: continue
+            status = "☠" if not p.alive else f"HP {p.hp}/{p.max_hp}"
+            lines.append(f"P{p.pid+1}-{p.char_name}: {status} 装备{len(p.equipment)}")
+        self.label_players.config(text="\n".join(lines))
+        if self.my_id < len(self.players):
+            me = self.players[self.my_id]
+            self.label_me.config(text=f"【{me.name}】HP:{me.hp}/{me.max_hp} 物攻:{me.atk} 法攻:{me.matk} 装备:{len(me.equipment)}")
+            for b in self.card_buttons: b.destroy()
+            self.card_buttons = []
+            for i, c in enumerate(me.hand):
+                nm = c.name + ("（装备）" if c.card_type == "equip" else "")
+                b = tk.Button(self.frame_hand, text=nm, font=("微软雅黑", 10), width=11,
+                              command=lambda cc=c, ii=i: self.play_card(cc, ii))
+                b.grid(row=i//7, column=i%7, padx=3, pady=3)
+                self.card_buttons.append(b)
 
-# ==================== 摸牌辅助 ====================
-def do_draw(player, deck, count):
-    drawn = 0
-    for _ in range(count):
-        if deck and player.draw_card(deck.pop()):
-            drawn += 1
-    return drawn
+    def broadcast_state(self):
+        if self.role != "host": return
+        for p in self.players:
+            own = p.pid == self.my_id
+            self.net.send_to_player(p.pid, {"type": "state",
+                "state": [pp.to_dict(include_hand=(pp.pid == p.pid)) for pp in self.players],
+                "turn_player": self.turn_player_id, "turn": self.turn})
 
-def calc_draw_count(player, is_skipped=False):
-    if len(player.hand) == 0:
-        return 3, "手牌为空，触发额外摸牌"
-    if is_skipped:
-        return 1, "被跳过回合，摸牌减少"
-    return 2, "正常摸牌"
+    def sync_state(self, state):
+        for i, pd in enumerate(state):
+            p = self.players[i]
+            p.hp = pd["hp"]; p.max_hp = pd["max_hp"]; p.atk = pd["atk"]; p.matk = pd["matk"]
+            p.alive = pd["alive"]; p.poison_turns = pd["poison_turns"]; p.burn_turns = pd["burn_turns"]
+            p.equipment = [Equipment(n) for n in pd["equipment"]]
+            if "hand" in pd: p.hand = [Card.from_dict(c) for c in pd["hand"]]
+        self.turn_player_id = state[0].get("_turn", self.turn_player_id) if False else self.turn_player_id
+        self.refresh_ui()
 
-# ==================== 攻击上限 ====================
-def get_attack_limit(player):
-    if player.has_equipment("加特林"): return 999
-    if player.char_name == "枪手" and player.has_equipment("双枪"): return 3
-    return 2
+    def ask_player(self, target_id, prompt, options):
+        """主机询问某个玩家（本地或远程）"""
+        if target_id == self.my_id:
+            text = prompt + "\n\n" + "\n".join(f"{i+1}. {o}" for i, o in enumerate(options))
+            c = simpledialog.askinteger("选择", text, minvalue=1, maxvalue=len(options))
+            return (c - 1) if c else 0
+        self.pending_ask = {"answer": None, "event": threading.Event()}
+        self.net.send_to_player(target_id, {"type": "ask", "prompt": prompt, "options": options})
+        deadline = time.time() + 60
+        while time.time() < deadline and not self.pending_ask["event"].is_set():
+            self.root.update(); time.sleep(0.05)
+        ans = self.pending_ask["answer"]
+        self.pending_ask = None
+        return ans if ans is not None else 0
 
-def get_normal_attack_bonus(player):
-    bonus = 0
-    if player.has_equipment("剑匣"): bonus += 1
-    if player.char_name == "利刃" and player.has_equipment("寒冰之刃"): bonus += 1
-    if player.char_name == "枪手" and player.has_equipment("双枪"): bonus += 1
-    return bonus
+    def show_ask_dialog(self, prompt, options):
+        text = prompt + "\n\n" + "\n".join(f"{i+1}. {o}" for i, o in enumerate(options))
+        c = simpledialog.askinteger("请选择", text, minvalue=1, maxvalue=len(options))
+        idx = (c - 1) if c else 0
+        self.net.send(self.net.sock, {"type": "answer", "index": idx})
 
-def equipment_attack_bonus(attacker):
-    extra = 0
-    for _ in range(sum(1 for e in attacker.equipment if e.name == "机械猎犬")):
-        if random.random() < 1 / 3:
-            print("🐕 机械猎犬触发，追加1点伤害！")
-            extra += 1
-    return extra
+    # ---------- 游戏动作（主机权威） ----------
+    def play_card(self, card, idx):
+        if not self.game_started: return
+        if self.turn_player_id != self.my_id:
+            self.log("⚠ 不是你的回合"); return
+        if self.role == "client":
+            self.net.send(self.net.sock, {"type": "play", "card": card.to_dict(), "idx": idx})
+            return
+        # 主机处理
+        self.host_play(self.my_id, card, idx)
 
-# ==================== 伤害防御响应 ====================
-def apply_damage(defender, damage, attacker, damage_type="normal", ignore_normal_shield=False):
-    if defender.transfer_active and damage_type in ("normal", "physical", "magic"):
-        target = defender.transfer_target
-        if target and target.is_alive():
-            print(f"⚖ {defender.name} 的【罪罚锁狱】触发！{damage} 点伤害转移到 {target.name}！")
-            target.hp -= damage
-            return 0
+    def host_play(self, pid, card, idx):
+        p = self.players[pid]
+        if card.card_type in ("attack", "physical", "magic"):
+            # 选目标
+            alive = [q for q in self.players if q.alive and q.pid != pid]
+            if not alive: return
+            options = [f"P{q.pid+1}-{q.char_name}" for q in alive]
+            t_idx = self.ask_player(pid, "选择目标:", options)
+            target = alive[t_idx]
+            # 计算伤害
+            dmg = card.value if card.card_type == "attack" else (p.atk if card.card_type == "physical" else p.matk)
+            if card.card_type == "attack":
+                if p.has_equipment("剑匣") or (p.char_name == "枪手" and p.has_equipment("双枪")): dmg += 1
+            if p.double_attack_left > 0: dmg *= 2; p.double_attack_left -= 1
+            if p.damage_double_turn: dmg *= 2
+            if sum(1 for e in p.equipment if e.name == "机械猎犬") and random.random() < 1/3: dmg += 1
+            # 防御响应
+            t_dmg = self.apply_damage(target, dmg, p, card.card_type)
+            self.broadcast_log(f"⚔ {p.name} 对 {target.name} 造成 {t_dmg} 伤害")
+            p.hand.pop(idx)
+        elif card.card_type == "heal":
+            p.hp = min(p.max_hp, p.hp + card.value); p.hand.pop(idx)
+            self.broadcast_log(f"💚 {p.name} 回复 {card.value} 血")
+        elif card.card_type == "rage":
+            p.damage_double_turn = True; p.hand.pop(idx); self.broadcast_log(f"🔥 {p.name} 狂暴剂")
+        elif card.card_type == "anesthetic":
+            alive = [q for q in self.players if q.alive and q.pid != pid]
+            if not alive: return
+            t_idx = self.ask_player(pid, "麻醉谁?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
+            alive[t_idx].skip_full_turn = True; p.hand.pop(idx)
+            self.broadcast_log(f"💉 {p.name} 麻醉 {alive[t_idx].name}")
+        elif card.card_type == "meditate":
+            p.hand.pop(idx)
+            cnt = 0
+            for _ in range(5):
+                if self.deck and p.draw_card(self.deck.pop()): cnt += 1
+            self.broadcast_log(f"📖 {p.name} 沉思摸 {cnt} 张")
+        elif card.card_type == "dismantle":
+            alive = [q for q in self.players if q.alive and q.pid != pid and q.equipment]
+            if not alive: self.broadcast_log("⚠ 无目标"); return
+            t_idx = self.ask_player(pid, "拆谁的装备?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
+            target = alive[t_idx]
+            eq_options = [f"{e.name}" for e in target.equipment]
+            eq_idx = self.ask_player(pid, "拆哪件?", eq_options)
+            target.equipment.pop(eq_idx); target.recalc_stats(); p.hand.pop(idx)
+            self.broadcast_log(f"🔨 {p.name} 拆除 {target.name} 的装备")
+        elif card.card_type == "steal":
+            alive = [q for q in self.players if q.alive and q.pid != pid and q.equipment]
+            if not alive: self.broadcast_log("⚠ 无目标"); return
+            t_idx = self.ask_player(pid, "抢谁的装备?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
+            target = alive[t_idx]
+            eq_idx = self.ask_player(pid, "抢哪件?", [e.name for e in target.equipment])
+            eq = target.equipment[eq_idx]
+            if p.can_equip(eq):
+                target.equipment.pop(eq_idx); target.recalc_stats()
+                p.equipment.append(eq); p.recalc_stats(); p.hand.pop(idx)
+                self.broadcast_log(f"🎯 {p.name} 抢走 {target.name} 的 {eq.name}")
+            else:
+                self.broadcast_log("⚠ 装备栏满，抢夺失败")
+        elif card.card_type == "equip":
+            eq = Equipment(card.name)
+            if p.can_equip(eq):
+                p.equipment.append(eq); p.recalc_stats(); p.hand.pop(idx)
+                self.broadcast_log(f"⚙ {p.name} 装备 {eq.name}")
+            else: self.broadcast_log("⚠ 装备栏满")
+        elif card.card_type == "duel":
+            alive = [q for q in self.players if q.alive and q.pid != pid]
+            if not alive: return
+            t_idx = self.ask_player(pid, "决斗谁?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
+            t = alive[t_idx]; p.duel_turns = 3; t.duel_turns = 3
+            p.hand.pop(idx)
+            self.broadcast_log(f"⚔ {p.name} 与 {t.name} 决斗！")
+        self.broadcast_state()
+        self.check_end()
 
-    if defender.immune_turn and damage_type == "normal":
-        print(f"🛡 {defender.name} 处于【废土壁垒】，免疫本次伤害！")
+    def apply_damage(self, target, dmg, attacker, damage_type):
+        # 罪罚锁狱
+        if target.transfer_active:
+            for q in self.players:
+                if q.alive and q.pid != target.pid:
+                    q.hp -= dmg
+                    self.broadcast_log(f"⚖ 伤害转移到 {q.name}")
+                    return 0
+        # 幽灵马车 / 重甲犀牛 / 防弹背心
+        if damage_type in ("attack", "magic") and target.carriage_buff:
+            dmg = max(0, dmg - 1); target.carriage_buff = False
+        if damage_type == "physical" and target.has_equipment("防弹背心") and not target.vest_used_this_turn:
+            dmg = max(0, dmg - 1); target.vest_used_this_turn = True
+        if target.has_equipment("重甲犀牛") and target.rhino_shield_available:
+            dmg = max(0, dmg - 1); target.rhino_shield_available = False
+        if sum(1 for e in target.equipment if e.name == "飞行滑板") and random.random() < 1/3:
+            self.broadcast_log(f"🛹 {target.name} 滑板闪避"); return 0
+        # 能量护盾
+        if target.energy_shield_hp > 0:
+            absorb = min(target.energy_shield_hp, dmg)
+            target.energy_shield_hp -= absorb; dmg -= absorb
+        if dmg <= 0: return 0
+        # 询问防御
+        options = []
+        if target.dodge_tokens > 0: options.append(("token", "快刺闪避"))
+        for sid, sk in target.char_data["skills"].items():
+            nm = sk["name"]
+            if nm in DEFENSE_SKILLS and target.cooldowns.get(sid, 0) == 0:
+                if damage_type == "magic" and nm in SHIELD_SKILLS: continue
+                options.append(("skill", sid, nm))
+        for i, c in enumerate(target.hand):
+            if c.card_type == "dodge": options.append(("dodge", i, "躲闪"))
+            elif c.card_type == "omnishield": options.append(("omni", i, "全能盾牌"))
+        options.append(("none", 0, "不防御"))
+        if len(options) == 1:
+            target.hp -= dmg
+            return dmg
+        ans = self.ask_player(target.pid, f"你受到 {dmg} 伤害，防御?", [o[2] for o in options])
+        choice = options[ans]
+        if choice[0] == "token":
+            target.dodge_tokens -= 1; self.broadcast_log(f"💨 {target.name} 闪避"); return 0
+        elif choice[0] == "skill":
+            sk = target.char_data["skills"][choice[1]]
+            target.cooldowns[choice[1]] = sk["cd"]
+            self.broadcast_log(f"🛡 {target.name} 使用 {choice[2]}"); return 0
+        elif choice[0] == "dodge":
+            target.hand.pop(choice[1]); self.broadcast_log(f"💨 {target.name} 躲闪"); return 0
+        elif choice[0] == "omni":
+            target.hand.pop(choice[1]); self.broadcast_log(f"🛡 {target.name} 全能盾牌"); return 0
+        target.hp -= dmg
+        return dmg
+
+    def broadcast_log(self, text):
+        self.log(text)
+        if self.role == "host": self.net.broadcast_all({"type": "log", "text": text})
+
+    def check_end(self):
+        alive = [p for p in self.players if p.hp > 0]
+        for p in self.players:
+            if p.hp <= 0: p.alive = False
+        if len(alive) <= 1:
+            winner = alive[0].name if alive else "无人"
+            txt = f"🏆 {winner} 获胜！"
+            self.log(txt)
+            if self.role == "host": self.net.broadcast_all({"type": "game_over", "text": txt})
+            messagebox.showinfo("游戏结束", txt)
+            self.root.destroy()
+
+    def action_skill(self):
+        if self.turn_player_id != self.my_id: self.log("⚠ 不是你的回合"); return
+        me = self.players[self.my_id]
+        avail = [(sid, sk["name"]) for sid, sk in me.char_data["skills"].items() if me.cooldowns.get(sid, 0) == 0]
+        if not avail: self.log("⚠ 无可用技能"); return
+        text = "可用:\n" + "\n".join(f"{i+1}. {n}" for i, (s, n) in enumerate(avail))
+        c = simpledialog.askinteger("技能", text, minvalue=1, maxvalue=len(avail))
+        if not c: return
+        sid, name = avail[c-1]
+        if self.role == "client":
+            self.net.send(self.net.sock, {"type": "skill", "sid": sid})
+        else:
+            self.host_skill(self.my_id, sid)
+
+    def host_skill(self, pid, sid):
+        p = self.players[pid]
+        name = p.char_data["skills"][sid]["name"]
+        cd = p.char_data["skills"][sid]["cd"]
+        # 简化：只做伤害/回复/控制类
+        alive = [q for q in self.players if q.alive and q.pid != pid]
+        if name in ("噬血",):
+            if alive: alive[0].hp -= 1; p.hp = min(p.max_hp, p.hp+1)
+        elif name in ("猎击", "剑击", "火焰灼烧", "锐击"):
+            for q in alive: q.hp -= 2
+        elif name in ("速击", "突刺", "激光"):
+            if alive: alive[0].hp -= 1
+        elif name in ("浮游炮",):
+            if alive: alive[0].hp -= 3
+        elif name in ("固本", "愈护", "急救"):
+            p.hp = min(p.max_hp, p.hp+1)
+        elif name == "坚韧蜕变": p.base_max_hp += 1; p.base_atk += 1; p.recalc_stats()
+        elif name == "寒冰增幅": p.base_atk += 1; p.base_matk += 1; p.recalc_stats()
+        elif name == "狂击增幅": p.double_attack_left = 2
+        elif name == "战威增幅": p.damage_double_turn = True
+        elif name in ("电击眩晕", "禁锢射击", "锁滞"):
+            if alive: alive[0].skip_next_turn = True
+        elif name == "腐毒侵蚀":
+            if alive: alive[0].poison_turns = 3
+        elif name == "焚身灼烧":
+            if alive: alive[0].burn_turns = 3
+        elif name == "迟滞弹":
+            for q in self.players:
+                if q.pid != pid:
+                    for k in q.cooldowns:
+                        if q.cooldowns[k] > 0: q.cooldowns[k] += 2
+        elif name == "速愈调度":
+            if "1" in p.cooldowns: p.cooldowns["1"] = max(0, p.cooldowns["1"]-2)
+        elif name == "拓械":
+            if p.extra_slots < 3 and len(p.hand) >= 2:
+                p.hand.pop(); p.hand.pop(); p.extra_slots += 1
+        p.cooldowns[sid] = cd
+        self.broadcast_log(f"✨ {p.name} 使用 {name}")
+        self.broadcast_state()
+        self.check_end()
+
+    def action_view_equip(self):
+        me = self.players[self.my_id]
+        info = f"装备：\n"
+        for e in me.equipment: info += f"  {e.name}（{e.desc}）\n"
+        hand_eq = [c for c in me.hand if c.card_type == "equip"]
+        if hand_eq:
+            info += "\n手牌中的装备：\n"
+            for c in hand_eq: info += f"  {c.name}（{EQUIPMENT_TEMPLATES.get(c.name,{}).get('desc','')}）\n"
+        messagebox.showinfo("装备信息", info)
+
+    def action_end_turn(self):
+        if self.turn_player_id != self.my_id: self.log("⚠ 不是你的回合"); return
+        if self.role == "client":
+            self.net.send(self.net.sock, {"type": "end_turn"})
+            return
+        self.host_end_turn()
+
+    def host_end_turn(self):
+        p = self.players[self.turn_player_id]
+        for k in p.cooldowns:
+            if p.cooldowns[k] > 0: p.cooldowns[k] -= 1
+        p.rhino_shield_available = not p.attacked_this_turn
+        if p.has_equipment("幽灵马车"): p.carriage_buff = True
+        p.transfer_active = False; p.extra_attack_tokens = 0
+        p.immune_turn = False; p.damage_double_turn = False; p.meditate_used_this_turn = False
+        p.vest_used_this_turn = False; p.attacked_this_turn = False
+        # 下一个回合
+        self.turn_player_id = (self.turn_player_id + 1) % 4
+        while not self.players[self.turn_player_id].alive:
+            self.turn_player_id = (self.turn_player_id + 1) % 4
+        self.turn += 1
+        # 摸牌
+        p = self.players[self.turn_player_id]
+        cnt = 3 if len(p.hand) == 0 else (1 if p.skip_next_turn or p.skip_full_turn else 2)
+        if p.skip_full_turn:
+            self.broadcast_log(f"💉 {p.name} 跳过整个回合")
+            p.skip_full_turn = False
+        elif p.skip_next_turn:
+            self.broadcast_log(f"⛔ {p.name} 跳过出牌")
+            p.skip_next_turn = False
+        drawn = 0
+        for _ in range(cnt):
+            if self.deck and p.draw_card(self.deck.pop()): drawn += 1
+        # 中毒/灼烧结算
+        if p.poison_turns > 0: p.hp -= 1; p.poison_turns -= 1
+        if p.burn_turns > 0: p.hp -= 1; p.burn_turns -= 1
+        if p.has_equipment("能量护盾") and p.energy_shield_hp == 0: p.energy_shield_hp = 1
+        self.broadcast_log(f"--- 第{self.turn}回合：{p.name} 摸 {drawn} 张 ---")
+        self.broadcast_state()
+        self.check_end()
+        # 如果当前是主机自己，刷新 UI
+        if self.turn_player_id == self.my_id: self.refresh_ui()
+
+    # 客户端发送/主机接收
+    def _handle_client_actions(self, msg):
+        t = msg.get("type")
+        if self.role != "host": return
+        if t == "play":
+            card = Card.from_dict(msg["card"]); idx = msg["idx"]
+            self.host_play(self.my_id if False else self._client_pid(msg["_from_conn"]), card, idx)
+        elif t == "skill":
+            pid = self._client_pid(msg["_from_conn"])
+            self.host_skill(pid, msg["sid"])
+        elif t == "end_turn":
+            pid = self._client_pid(msg["_from_conn"])
+            if self.turn_player_id == pid: self.host_end_turn()
+        elif t == "answer":
+            if self.pending_ask:
+                self.pending_ask["answer"] = msg["index"]; self.pending_ask["event"].set()
+
+    def _client_pid(self, conn):
+        for i, (c, n) in enumerate(self.net.clients):
+            if c == conn: return i + 1
         return 0
 
-    if damage_type in ("normal", "magic") and defender.carriage_buff:
-        damage = max(0, damage - 1)
-        defender.carriage_buff = False
-        print(f"🐎 幽灵马车效果触发，技能伤害-1！")
-
-    if damage_type == "physical" and defender.has_equipment("防弹背心"):
-        if not defender.vest_used_this_turn:
-            damage = max(0, damage - 1)
-            defender.vest_used_this_turn = True
-            print(f"🦺 防弹背心效果触发，物理伤害-1！")
-
-    if defender.has_equipment("重甲犀牛") and defender.rhino_shield_available:
-        damage = max(0, damage - 1)
-        defender.rhino_shield_available = False
-        print(f"🦏 重甲犀牛效果触发，本次伤害-1！")
-
-    for _ in range(sum(1 for e in defender.equipment if e.name == "飞行滑板")):
-        if random.random() < 1 / 3:
-            print(f"🛹 飞行滑板触发，完全闪避本次伤害！")
-            return 0
-
-    if defender.energy_shield_hp > 0:
-        absorbed = min(defender.energy_shield_hp, damage)
-        defender.energy_shield_hp -= absorbed
-        damage -= absorbed
-        print(f"⚡ 能量护盾吸收了 {absorbed} 点伤害！（剩余护盾 {defender.energy_shield_hp}）")
-        if damage == 0:
-            return 0
-
-    options = []
-
-    if defender.dodge_tokens > 0:
-        options.append(("token", "dodge_token", f"快刺闪避（剩余 {defender.dodge_tokens} 次）- 规避单次伤害"))
-
-    for sid, sk in defender.char_data["skills"].items():
-        name = sk["name"]
-        if name in DEFENSE_SKILLS and defender.cooldowns.get(sid, 0) == 0:
-            if ignore_normal_shield and name in SHIELD_SKILLS: continue
-            if damage_type == "magic" and name in SHIELD_SKILLS: continue
-            tag = "规避" if name in DODGE_SKILLS else "护盾"
-            options.append(("skill", sid, f"技能【{name}】({tag}) - {sk['desc']}"))
-
-    for i, card in enumerate(defender.hand):
-        if card.card_type == "dodge":
-            options.append(("card", i, "手牌【躲闪】- 规避单次伤害"))
-        elif card.card_type == "omnishield":
-            options.append(("card", i, "手牌【全能盾牌】- 抵挡全部伤害"))
-
-    if not options:
-        return damage
-
-    print(f"\n⚠ {defender.name} 受到 {damage} 点伤害！可选择防御：")
-    for i, opt in enumerate(options, 1):
-        print(f"  [{i}] {opt[2]}")
-    print(f"  [0] 不防御，承受全部伤害")
-
-    while True:
-        try:
-            choice = int(input("请选择防御方式: ").strip())
-            if choice == 0:
-                return damage
-            if 1 <= choice <= len(options):
-                otype, data, _ = options[choice - 1]
-                if otype == "token":
-                    defender.dodge_tokens -= 1
-                    print(f"💨 {defender.name} 使用【快刺闪避】，规避本次伤害！")
-                    return 0
-                elif otype == "skill":
-                    sid = data
-                    sk = defender.char_data["skills"][sid]
-                    name = sk["name"]
-                    if name in DODGE_SKILLS:
-                        print(f"💨 {defender.name} 使用【{name}】，规避本次伤害！")
-                    elif name == "坚防":
-                        print(f"🛡 {defender.name} 使用【{name}】，抵挡伤害并反弹1点给 {attacker.name}！")
-                        attacker.hp -= 1
-                    else:
-                        print(f"🧊 {defender.name} 使用【{name}】，抵挡本次伤害！")
-                    if sk["cd"] > 0:
-                        defender.cooldowns[sid] = sk["cd"]
-                    return 0
-                else:
-                    card = defender.hand.pop(data)
-                    if card.card_type == "dodge":
-                        print(f"💨 {defender.name} 使用【躲闪】，规避本次伤害！")
-                    else:
-                        print(f"🛡 {defender.name} 使用【全能盾牌】，抵挡本次伤害！")
-                    return 0
-            print("无效选择，请重新输入。")
-        except ValueError:
-            print("请输入数字。")
-
-# ==================== 负面效果防御 ====================
-def try_defend_debuff(defender, debuff_name):
-    omni_indices = [i for i, c in enumerate(defender.hand) if c.card_type == "omnishield"]
-    if not omni_indices:
-        return False
-    print(f"\n⚠ {defender.name} 即将被施加负面效果【{debuff_name}】！")
-    print(f"  [1] 使用【全能盾牌】抵挡（你有 {len(omni_indices)} 张）")
-    print(f"  [0] 不抵挡，承受效果")
-    while True:
-        try:
-            choice = int(input("请选择: ").strip())
-            if choice == 0:
-                return False
-            if choice == 1:
-                for i, c in enumerate(defender.hand):
-                    if c.card_type == "omnishield":
-                        defender.hand.pop(i)
-                        print(f"🛡 {defender.name} 使用【全能盾牌】抵挡了【{debuff_name}】！")
-                        return True
-            print("无效选择。")
-        except ValueError:
-            print("请输入数字。")
-
-# ==================== 技能执行 ====================
-def use_skill(user, opponent, skill_id):
-    if skill_id == "急救":
-        if not (user.has_equipment("医疗包") and user.char_name != "多斯"):
-            print("没有这个技能。")
-            return False
-        if user.cooldowns.get("急救", 0) > 0:
-            print("【急救】还在冷却中！")
-            return False
-        user.hp = min(user.max_hp, user.hp + 1)
-        user.cooldowns["急救"] = 3
-        print(f"💚 {user.name} 使用【急救】，回复1点血量！")
-        return True
-
-    if skill_id not in user.char_data["skills"]:
-        print("没有这个技能。")
-        return False
-    if user.cooldowns.get(skill_id, 0) > 0:
-        print(f"【{user.char_data['skills'][skill_id]['name']}】还在冷却中！")
-        return False
-
-    sk = user.char_data["skills"][skill_id]
-    name = sk["name"]
-
-    if name in DEFENSE_SKILLS:
-        print(f"⚠ 【{name}】只能在受到伤害时使用！")
-        return False
-
-    # ============ 拾荒者 ============
-    if name == "劫掠":
-        if len(user.hand) < 3:
-            print("需要至少3张手牌才能使用【劫掠】！")
-            return False
-        user.hand.pop(); user.hand.pop()
-        if opponent.equipment:
-            stolen = opponent.equipment.pop(random.randint(0, len(opponent.equipment) - 1))
-            opponent.recalc_stats()
-            if user.can_equip(stolen):
-                user.equip(stolen)
-                print(f"🪝 {user.name} 使用【劫掠】，抢走了 {opponent.name} 的【{stolen.name}】！")
-            else:
-                print(f"🪝 {user.name} 使用【劫掠】，抢到【{stolen.name}】但装备栏已满，效果消散。")
-        elif opponent.hand:
-            stolen = opponent.hand.pop(random.randint(0, len(opponent.hand) - 1))
-            user.hand.append(stolen)
-            print(f"🪝 {user.name} 使用【劫掠】，偷走了 {opponent.name} 的 1 张手牌！")
-        else:
-            print(f"🪝 {user.name} 使用【劫掠】，但对手无手牌无装备，失败。")
-    elif name == "废土壁垒":
-        user.immune_turn = True
-        print(f"🛡 {user.name} 开启【废土壁垒】，本回合免疫普通攻击和技能伤害！")
-
-    # ============ 毒猎 ============
-    elif name == "噬血":
-        opponent.hp -= 1
-        user.hp = min(user.max_hp, user.hp + 1)
-        print(f"🩸 {user.name} 使用【噬血】，偷取 {opponent.name} 1点生命！")
-    elif name == "猎击":
-        dmg = apply_damage(opponent, 2, user, "normal")
-        opponent.hp -= dmg
-        print(f"🏹 {user.name} 使用【猎击】，造成 {dmg} 点技能伤害！")
-    elif name == "腐毒侵蚀":
-        if try_defend_debuff(opponent, "腐毒侵蚀"):
-            print(f"（{user.name} 的【腐毒侵蚀】被抵消）")
-        else:
-            opponent.poison_turns = 3
-            if opponent.hand_limit_reduction < 1:
-                opponent.hand_limit_reduction = 1
-                print(f"☠ {user.name} 对 {opponent.name} 施加【腐毒侵蚀】，持续3回合！")
-                print(f"   {opponent.name} 手牌上限永久-1（当前上限 {opponent.get_hand_limit()}）")
-            else:
-                print(f"☠ {user.name} 对 {opponent.name} 施加【腐毒侵蚀】，持续3回合！")
-
-    # ============ 罗伊 ============
-    elif name == "速击":
-        dmg = apply_damage(opponent, 1, user, "normal")
-        opponent.hp -= dmg
-        print(f"⚡ {user.name} 使用【速击】，造成 {dmg} 点技能伤害！")
-    elif name == "坚韧蜕变":
-        user.base_max_hp += 1
-        user.base_atk += 1
-        user.recalc_stats()
-        print(f"💪 {user.name} 使用【坚韧蜕变】，永久+1血量上限，+1物攻！")
-
-    # ============ 吕山 ============
-    elif name == "电击眩晕":
-        opponent.skip_next_turn = True
-        print(f"⚡ {user.name} 使用【电击眩晕】，{opponent.name} 下回合跳过出牌阶段！")
-    elif name == "狂击增幅":
-        user.double_attack_left = 2
-        print(f"🔥 {user.name} 使用【狂击增幅】，下2张攻击手牌伤害翻倍！")
-
-    # ============ 钟离 ============
-    elif name == "固本":
-        user.hp = min(user.max_hp, user.hp + 1)
-        print(f"💚 {user.name} 使用【固本】，回复1点血量！")
-    elif name == "剑击":
-        dmg = apply_damage(opponent, 2, user, "normal")
-        opponent.hp -= dmg
-        print(f"⚔ {user.name} 使用【剑击】，造成 {dmg} 点技能伤害！")
-    elif name == "火焰灼烧":
-        dmg = apply_damage(opponent, 2, user, "normal")
-        opponent.hp -= dmg
-        print(f"🔥 {user.name} 使用【火焰灼烧】，对 {opponent.name} 造成 {dmg} 点群体技能伤害！")
-
-    # ============ 利刃 ============
-    elif name == "突刺":
-        dmg = apply_damage(opponent, 1, user, "normal")
-        opponent.hp -= dmg
-        print(f"🗡 {user.name} 使用【突刺】，造成 {dmg} 点技能伤害！")
-    elif name == "寒冰增幅":
-        user.base_atk += 1
-        user.base_matk += 1
-        user.recalc_stats()
-        print(f"❄ {user.name} 使用【寒冰增幅】，永久+1物攻，+1法攻！")
-
-    # ============ 枪手：完整回溯 ============
-    elif name == "迟滞弹":
-        for sid in opponent.cooldowns:
-            if opponent.cooldowns[sid] > 0:
-                opponent.cooldowns[sid] += 2
-        print(f"🔫 {user.name} 使用【迟滞弹】，{opponent.name} 冷却中技能CD+2！")
-    elif name == "禁锢射击":
-        opponent.skip_next_turn = True
-        print(f"🔒 {user.name} 使用【禁锢射击】，{opponent.name} 下回合跳过出牌阶段！")
-    elif name == "时空回溯":
-        snap = user.gunner_snapshot
-        if snap is None:
-            print("【时空回溯】暂时没有可回溯的状态！")
-            return False
-        old_hp = user.hp
-        old_eq = len(user.equipment)
-        old_hand = len(user.hand)
-        user.hp = snap["hp"]
-        user.equipment = copy.deepcopy(snap["equipment"])
-        user.hand = copy.deepcopy(snap["hand"])
-        user.cooldowns = copy.deepcopy(snap["cooldowns"])
-        user.poison_turns = snap["poison_turns"]
-        user.burn_turns = snap["burn_turns"]
-        user.hand_limit_reduction = snap["hand_limit_reduction"]
-        user.immune_turn = snap["immune_turn"]
-        user.skip_next_turn = snap["skip_next_turn"]
-        user.skip_full_turn = snap["skip_full_turn"]
-        user.damage_double_turn = snap["damage_double_turn"]
-        user.double_attack_left = snap["double_attack_left"]
-        user.energy_shield_hp = snap["energy_shield_hp"]
-        user.carriage_buff = snap["carriage_buff"]
-        user.vest_used_this_turn = snap["vest_used_this_turn"]
-        user.rhino_shield_available = snap["rhino_shield_available"]
-        user.recalc_stats()
-        print(f"⏰ {user.name} 使用【时空回溯】！完整回溯到上回合结束时的状态：")
-        print(f"   血量 {old_hp} → {user.hp}")
-        print(f"   装备 {old_eq} 件 → {len(user.equipment)} 件")
-        print(f"   手牌 {old_hand} 张 → {len(user.hand)} 张")
-        print(f"   技能冷却、中毒/灼烧等状态均已回溯")
-
-    # ============ 帝郡 ============
-    elif name == "焚身灼烧":
-        if try_defend_debuff(opponent, "焚身灼烧"):
-            print(f"（{user.name} 的【焚身灼烧】被抵消）")
-        else:
-            turns = 3
-            if user.char_name == "帝郡" and user.has_equipment("熔岩动力戟"):
-                turns = 5
-                print("🌋 熔岩动力戟效果：灼烧时长延长至5回合！")
-            opponent.burn_turns = turns
-            print(f"🔥 {user.name} 对 {opponent.name} 施加【焚身灼烧】，持续{turns}回合！")
-    elif name == "罪罚锁狱":
-        user.transfer_active = True
-        user.transfer_target = opponent
-        print(f"⚖ {user.name} 使用【罪罚锁狱】，本回合受到的伤害全部转移给 {opponent.name}！")
-
-    # ============ 冷锋 ============
-    elif name == "激光":
-        dmg = apply_damage(opponent, 1, user, "magic")
-        opponent.hp -= dmg
-        print(f"🔵 {user.name} 使用【激光】，造成 {dmg} 点法术技能伤害！")
-    elif name == "浮游炮":
-        dmg = apply_damage(opponent, 3, user, "magic")
-        opponent.hp -= dmg
-        print(f"💥 {user.name} 使用【浮游炮】，造成 {dmg} 点法术技能伤害！")
-
-    # ============ 秦默 ============
-    elif name == "傀儡术":
-        if not opponent.hand:
-            print("⚠ 对手没有手牌，无法使用【傀儡术】！")
-            return False
-        print(f"\n{opponent.name} 的手牌：")
-        for i, c in enumerate(opponent.hand):
-            print(f"  [{i}] {c}")
-        try:
-            sel = int(input("选择要借用的手牌编号（-1取消）: ").strip())
-            if sel == -1:
-                return False
-            if 0 <= sel < len(opponent.hand):
-                stolen_card = opponent.hand[sel]
-                print(f"🎭 {user.name} 使用【傀儡术】，借用了【{stolen_card.name}】！")
-                if stolen_card.card_type == 'attack':
-                    dmg = apply_damage(opponent, stolen_card.value + get_normal_attack_bonus(user), user, "normal")
-                    opponent.hp -= dmg
-                    print(f"   对 {opponent.name} 造成 {dmg} 点普攻伤害！")
-                elif stolen_card.card_type == 'physical':
-                    dmg = apply_damage(opponent, opponent.atk, user, "physical")
-                    opponent.hp -= dmg
-                    print(f"   对 {opponent.name} 造成 {dmg} 点物理伤害！")
-                elif stolen_card.card_type == 'magic':
-                    dmg = apply_damage(opponent, opponent.matk, user, "magic")
-                    opponent.hp -= dmg
-                    print(f"   对 {opponent.name} 造成 {dmg} 点法术伤害！")
-                elif stolen_card.card_type == 'heal':
-                    user.hp = min(user.max_hp, user.hp + stolen_card.value)
-                    print(f"   {user.name} 回复了 {stolen_card.value} 点生命！")
-                else:
-                    print("   该牌无法通过傀儡术使用。")
-                    return False
-                print("   （该牌仍属于对手）")
-            else:
-                print("无效编号。")
-                return False
-        except ValueError:
-            print("请输入数字。")
-            return False
-    elif name == "锐击":
-        dmg = apply_damage(opponent, 2, user, "normal")
-        opponent.hp -= dmg
-        print(f"⚔ {user.name} 使用【锐击】，造成 {dmg} 点技能伤害！")
-    elif name == "复生献祭":
-        print("【复生献祭】为阵亡时自动触发，无需主动使用！")
-        return False
-
-    # ============ 玖恒 ============
-    elif name == "拓械":
-        if user.extra_slots >= 3:
-            print("已达到额外装备槽上限（3个）！")
-            return False
-        if len(user.hand) < 2:
-            print("需要至少2张手牌才能使用【拓械】！")
-            return False
-        user.hand.pop(); user.hand.pop()
-        user.extra_slots += 1
-        print(f"⚙ {user.name} 使用【拓械】，获得1个额外装备槽！（当前：{user.extra_slots}/3）")
-    elif name == "锁滞":
-        opponent.skip_next_turn = True
-        print(f"🔗 {user.name} 使用【锁滞】，{opponent.name} 下回合跳过出牌阶段！")
-    elif name == "战威增幅":
-        user.damage_double_turn = True
-        print(f"⚡ {user.name} 使用【战威增幅】，本回合自身所有伤害翻倍（上限2倍）！")
-
-    # ============ 多斯 ============
-    elif name == "愈护":
-        user.hp = min(user.max_hp, user.hp + 1)
-        print(f"💚 {user.name} 使用【愈护】，回复1点血量！")
-    elif name == "速愈调度":
-        if "1" in user.cooldowns:
-            user.cooldowns["1"] = max(0, user.cooldowns["1"] - 2)
-        print(f"⏩ {user.name} 使用【速愈调度】，一技能CD-2！")
-    elif name == "复生仪式":
-        print("【复生仪式】为阵亡时自动触发，无需主动使用！")
-        return False
-
-    else:
-        print(f"技能【{name}】暂未实现。")
-        return False
-
-    cd = sk["cd"]
-    if name == "激光" and user.char_name == "冷锋" and user.has_equipment("脉冲炮"):
-        cd = max(0, cd - 1)
-        print("🔫 脉冲炮效果：激光CD-1！")
-    if name == "愈护" and user.char_name == "多斯" and user.has_equipment("医疗包"):
-        cd = max(0, cd - 2)
-        print("💊 医疗包效果：愈护CD-2！")
-    if name == "废土壁垒" and user.char_name == "拾荒者" and user.has_equipment("烟雾掩护"):
-        cd = max(0, cd - 1)
-        print("💨 烟雾掩护效果：废土壁垒CD-1！")
-
-    if cd > 0:
-        user.cooldowns[skill_id] = cd
-    return True
-
-# ==================== 回合开始处理 ====================
-def on_turn_start(player):
-    if player.cd_penalty > 0:
-        for sid in player.cooldowns:
-            if player.cooldowns[sid] > 0:
-                player.cooldowns[sid] += player.cd_penalty
-        print(f"⏱ {player.name} 受到【牵制】影响，冷却中技能 CD+{player.cd_penalty}！")
-        player.cd_penalty = 0
-
-    if player.char_name == "多斯":
-        player.hp = min(player.max_hp, player.hp + 1)
-        print(f"✨ 多斯被动【愈愈光环】触发，{player.name} 回复1点血量！")
-
-    if player.poison_turns > 0:
-        player.hp -= 1
-        player.poison_turns -= 1
-        print(f"☠ {player.name} 受到毒素伤害，掉1点血！（剩余{player.poison_turns}回合）")
-
-    if player.burn_turns > 0:
-        player.hp -= 1
-        player.burn_turns -= 1
-        print(f"🔥 {player.name} 受到灼烧伤害，掉1点血！（剩余{player.burn_turns}回合）")
-
-    if player.has_equipment("能量护盾") and player.energy_shield_hp == 0:
-        player.energy_shield_hp = 1
-        print(f"⚡ 能量护盾恢复1点护盾！")
-
-# ==================== 复活检查 ====================
-def try_revive(player):
-    if player.hp > 0:
-        return True
-
-    if player.char_name == "秦默":
-        if player.revive_count >= 2:
-            print(f"💀 {player.name} 的【复生献祭】次数已用尽（最多 2 次）！")
-            return False
-        cost = 5 if player.revive_count == 0 else 10
-        if len(player.hand) < cost:
-            print(f"💀 {player.name} 的【复生献祭】需要 {cost} 张手牌，手牌不足！")
-            return False
-        for _ in range(cost):
-            player.hand.pop()
-        player.hp = player.max_hp
-        player.revive_count += 1
-        print(f"✨ {player.name} 使用【复生献祭】复活！消耗 {cost} 张手牌，恢复满血！")
-        print(f"   （已复活 {player.revive_count}/2 次）")
-        return True
-
-    if player.char_name == "多斯":
-        cd = player.cooldowns.get("3", 0)
-        if cd == 0 and player.revive_count < 1:
-            player.hp = player.max_hp
-            player.revive_count += 1
-            player.cooldowns["3"] = 8
-            print(f"✨ {player.name} 使用【复生仪式】自动复活！恢复满血！")
-            return True
-        else:
-            print(f"💀 {player.name} 的【复生仪式】已用过或还在冷却中！")
-            return False
-
-    return False
-
-# ==================== 决斗死亡处理 ====================
-def trigger_duel_death(player):
-    for i, c in enumerate(player.hand):
-        if c.card_type == "omnishield":
-            print(f"\n⚠ {player.name} 即将因决斗阵亡！你有【全能盾牌】可以抵消。")
-            try:
-                choice = input(f"是否使用【全能盾牌】抵消死亡？(y/n): ").strip().lower()
-            except Exception:
-                choice = 'n'
-            if choice == 'y':
-                player.hand.pop(i)
-                print(f"🛡 {player.name} 使用【全能盾牌】抵消了决斗死亡！")
-                return False
-    player.hp = 0
-    print(f"💀 {player.name} 因决斗阵亡！")
-    return True
-
-# ==================== 出牌处理 ====================
-def play_attack_card(current_player, opponent, card, damage_type, base_damage, ignore_normal_shield=False):
-    damage = base_damage
-    if card.card_type == 'attack':
-        damage += get_normal_attack_bonus(current_player)
-
-    if current_player.double_attack_left > 0:
-        damage *= 2
-        current_player.double_attack_left -= 1
-        print("🔥 狂击增幅触发，伤害翻倍！")
-    if current_player.damage_double_turn:
-        damage *= 2
-        print("⚡ 战威增幅/狂暴剂触发，伤害翻倍！")
-
-    damage += equipment_attack_bonus(current_player)
-
-    actual = apply_damage(opponent, damage, current_player, damage_type, ignore_normal_shield=ignore_normal_shield)
-    opponent.hp -= actual
-    if actual > 0:
-        type_name = {"normal": "", "physical": "物理", "magic": "法术"}[damage_type]
-        print(f"{current_player.name} 对 {opponent.name} 造成 {actual} 点{type_name}伤害！")
-    return actual
-
-def do_steal(current_player, opponent):
-    if not opponent.equipment:
-        print("⚠ 对方没有装备！")
-        return False
-    print(f"\n对方的装备：")
-    for i, eq in enumerate(opponent.equipment):
-        print(f"  [{i}] {eq.name}（{eq.equip_type}）- {eq.desc}")
-    while True:
-        try:
-            choice = int(input("请选择要抢夺的装备编号（-1取消）: ").strip())
-            if choice == -1:
-                return False
-            if 0 <= choice < len(opponent.equipment):
-                eq = opponent.equipment[choice]
-                if not current_player.can_equip(eq):
-                    limit = current_player.equipment_limit() + (current_player.extra_slots if current_player.char_name == "玖恒" else 0)
-                    print(f"⚠ 你的 {eq.equip_type} 装备栏已满（上限{limit}件），无法抢夺！")
-                    return False
-                opponent.equipment.remove(eq)
-                opponent.recalc_stats()
-                current_player.equip(eq)
-                print(f"🎯 {current_player.name} 使用【抢夺】，抢走了 {opponent.name} 的【{eq.name}】！")
-                if eq.name == "能量护盾":
-                    current_player.energy_shield_hp = 1
-                    print("  ⚡ 能量护盾：立即获得1点护盾！")
-                return True
-            print("无效编号。")
-        except ValueError:
-            print("请输入数字。")
-
-def do_unequip(current_player):
-    if not current_player.equipment:
-        print("⚠ 你没有任何装备！")
-        return False
-    print(f"\n你的装备：")
-    for i, eq in enumerate(current_player.equipment):
-        print(f"  [{i}] {eq.name}（{eq.equip_type}）- {eq.desc}")
-    while True:
-        try:
-            choice = int(input("请选择要卸下的装备编号（-1取消）: ").strip())
-            if choice == -1:
-                return False
-            if 0 <= choice < len(current_player.equipment):
-                eq = current_player.equipment[choice]
-                current_player.unequip(eq)
-                return True
-            print("无效编号。")
-        except ValueError:
-            print("请输入数字。")
-
-# ==================== 游戏主循环 ====================
-def game_loop():
-    print("====== 火柴杀 ======")
-    print("开始选择角色：")
-
-    p1 = select_character("玩家1")
-    p2 = select_character("玩家2")
-
-    deck = create_deck()
-    for _ in range(3):
-        p1.draw_card(deck.pop())
-        p2.draw_card(deck.pop())
-
-    current_player = p1
-    opponent = p2
-    turn = 1
-    duel_active = False
-
-    while True:
-        if not p1.is_alive() or not p2.is_alive():
-            break
-
-        print(f"\n--- 第{turn}回合 ---")
-        print(f"{current_player.name} 的回合 (HP: {current_player.hp}/{current_player.max_hp})")
-        print(f"  物攻: {current_player.atk}  法攻: {current_player.matk}  装备数: {len(current_player.equipment)}")
-
-        if turn > 1:
-            p1.prev_state = p1.get_state_snapshot()
-            p2.prev_state = p2.get_state_snapshot()
-
-        # 跳过整回合
-        if current_player.skip_full_turn:
-            print(f"💉 {current_player.name} 被【麻醉剂】麻醉，跳过整个回合！")
-            current_player.skip_full_turn = False
-            count, reason = calc_draw_count(current_player, is_skipped=True)
-            if deck:
-                drawn = do_draw(current_player, deck, count)
-                print(f"💫 {current_player.name} 摸了 {drawn} 张牌。")
-            current_player.reduce_cooldowns()
-            current_player.on_turn_end()
-            # 枪手保存快照
-            if current_player.char_name == "枪手":
-                current_player.save_gunner_snapshot()
-            current_player, opponent = opponent, current_player
-            turn += 1
-            continue
-
-        # 回合开始
-        current_player.reset_turn_flags()
-        on_turn_start(current_player)
-        if not current_player.is_alive():
-            if try_revive(current_player):
-                pass
-            else:
-                print(f"\n💀 {current_player.name} 阵亡！{opponent.name} 获胜！")
-                return
-
-        # 摸牌
-        is_skipped = current_player.skip_next_turn
-        count, reason = calc_draw_count(current_player, is_skipped=is_skipped)
-        if reason != "正常摸牌":
-            print(f"💫 {current_player.name} {reason}！")
-        if deck:
-            drawn = do_draw(current_player, deck, count)
-            print(f"{current_player.name} 摸了 {drawn} 张牌。")
-        else:
-            print("牌堆已空。")
-
-        # 跳过出牌阶段
-        if current_player.skip_next_turn:
-            print(f"⛔ {current_player.name} 跳过本回合出牌阶段！")
-            current_player.skip_next_turn = False
-            current_player.reduce_cooldowns()
-            current_player.on_turn_end()
-            if current_player.char_name == "枪手":
-                current_player.save_gunner_snapshot()
-            current_player, opponent = opponent, current_player
-            turn += 1
-            continue
-
-        # 出牌阶段
-        attack_limit = get_attack_limit(current_player)
-        attack_cards_used = 0
-        if attack_limit < 999:
-            print(f"（本回合攻击手牌上限：{attack_limit} 张）")
-
-        while True:
-            current_player.show_hand()
-            current_player.show_equipment()
-            print("提示：输入 u 可卸下自己的装备")
-            action = input("请选择: 牌序号出牌 | 's'技能 | 'u'卸装备 | 'end'结束回合: ").strip()
-
-            if action.lower() == 'end':
-                break
-
-            if action.lower() == 'u':
-                do_unequip(current_player)
-                continue
-
-            if action.lower() == 's':
-                current_player.show_skills()
-                sk_choice = input("输入技能编号使用（或'急'用急救），'back'返回: ").strip()
-                if sk_choice == 'back':
-                    continue
-                if sk_choice == '急' or sk_choice == "急救":
-                    use_skill(current_player, opponent, "急救")
-                    continue
-                if sk_choice in current_player.char_data["skills"]:
-                    use_skill(current_player, opponent, sk_choice)
-                    if not opponent.is_alive():
-                        if try_revive(opponent):
-                            pass
-                        else:
-                            print(f"\n💀 {opponent.name} 阵亡！{current_player.name} 获胜！")
-                            return
-                else:
-                    print("无效技能编号。")
-                continue
-
-            try:
-                idx = int(action)
-                if 0 <= idx < len(current_player.hand):
-                    card = current_player.hand[idx]
-
-                    if card.card_type in ('attack', 'physical', 'magic'):
-                        is_extra_attack = False
-                        if current_player.extra_attack_tokens > 0 and card.card_type == 'attack' and attack_cards_used >= attack_limit:
-                            is_extra_attack = True
-                            current_player.extra_attack_tokens -= 1
-                            print("🔄 使用【连击】的额外普攻机会！")
-
-                        if not is_extra_attack and attack_cards_used >= attack_limit:
-                            print(f"本回合最多只能使用{attack_limit}张攻击手牌！")
-                            continue
-
-                        ignore_shield = (card.effect == "pierce")
-
-                        if card.card_type == 'attack':
-                            actual = play_attack_card(current_player, opponent, card, "normal", card.value, ignore_normal_shield=ignore_shield)
-                        elif card.card_type == 'physical':
-                            actual = play_attack_card(current_player, opponent, card, "physical", current_player.atk)
-                        elif card.card_type == 'magic':
-                            actual = play_attack_card(current_player, opponent, card, "magic", current_player.matk)
-
-                        if card.effect == "combo":
-                            current_player.extra_attack_tokens += 1
-                            print("🔄 【连击】：获得 1 次额外普攻机会！")
-                        elif card.effect == "quick":
-                            current_player.dodge_tokens += 1
-                            print("💨 【快刺】：获得 1 次闪避！")
-                        elif card.effect == "sweep":
-                            print("🌪 【横扫】：对全体敌人造成伤害（1v1 已对对手造成）")
-                        elif card.effect == "bind":
-                            opponent.cd_penalty += 1
-                            print("⏱ 【牵制】：对手下回合冷却中的技能 CD+1！")
-                        elif card.effect == "blood":
-                            current_player.hp -= 1
-                            print("🩸 【浴血】：自身受到 1 点反伤！")
-
-                        current_player.hand.pop(idx)
-                        attack_cards_used += 1
-                        current_player.attacked_this_turn = True
-
-                    elif card.card_type == 'heal':
-                        heal_amount = card.value
-                        current_player.hp = min(current_player.max_hp, current_player.hp + heal_amount)
-                        print(f"{current_player.name} 恢复了 {heal_amount} 点生命。")
-                        current_player.hand.pop(idx)
-
-                    elif card.card_type == 'rage':
-                        current_player.damage_double_turn = True
-                        print(f"🔥 {current_player.name} 使用【狂暴剂】，本回合所有伤害翻倍！")
-                        current_player.hand.pop(idx)
-
-                    elif card.card_type == 'anesthetic':
-                        if opponent.skip_full_turn:
-                            print("⚠ 目标已被麻醉，不能连续使用！")
-                            continue
-                        opponent.skip_full_turn = True
-                        print(f"💉 {current_player.name} 对 {opponent.name} 使用【麻醉剂】！")
-                        current_player.hand.pop(idx)
-
-                    elif card.card_type == 'meditate':
-                        if current_player.meditate_used_this_turn:
-                            print("⚠ 本回合已经使用过【沉思】了！")
-                            continue
-                        current_player.meditate_used_this_turn = True
-                        current_player.hand.pop(idx)
-                        drawn = do_draw(current_player, deck, 5)
-                        print(f"📖 {current_player.name} 使用【沉思】，抽取了 {drawn} 张牌！")
-
-                    elif card.card_type == 'dismantle':
-                        if not opponent.equipment:
-                            print("⚠ 对方没有装备！")
-                            continue
-                        print(f"\n对方的装备：")
-                        for i, eq in enumerate(opponent.equipment):
-                            print(f"  [{i}] {eq.name}（{eq.equip_type}）")
-                        try:
-                            sel = int(input("选择要拆除的装备编号（-1取消）: ").strip())
-                            if sel == -1:
-                                continue
-                            if 0 <= sel < len(opponent.equipment):
-                                removed = opponent.equipment.pop(sel)
-                                opponent.recalc_stats()
-                                print(f"🔨 {current_player.name} 使用【拆除】，拆除了 {opponent.name} 的【{removed.name}】！")
-                                current_player.hand.pop(idx)
-                            else:
-                                print("无效编号。")
-                        except ValueError:
-                            print("请输入数字。")
-
-                    elif card.card_type == 'steal':
-                        if not opponent.equipment:
-                            print("⚠ 对方没有装备，无法使用【抢夺】！")
-                            continue
-                        success = do_steal(current_player, opponent)
-                        if success:
-                            current_player.hand.pop(idx)
-
-                    elif card.card_type == 'duel':
-                        if duel_active:
-                            print("⚠ 已经有决斗在进行中！")
-                            continue
-                        current_player.duel_turns = 3
-                        opponent.duel_turns = 3
-                        duel_active = True
-                        print(f"⚔ {current_player.name} 对 {opponent.name} 发起【决斗】！")
-                        current_player.hand.pop(idx)
-
-                    elif card.card_type == 'equip':
-                        eq_name = card.name
-                        eq = Equipment(eq_name)
-                        if not current_player.can_equip(eq):
-                            limit = current_player.equipment_limit() + (current_player.extra_slots if current_player.char_name == "玖恒" else 0)
-                            print(f"⚠ {eq.equip_type} 装备栏已满（上限{limit}件）！")
-                            print(f"   提示：可输入 u 卸下旧装备，或使用【拆除】/【抢夺】处理")
-                            continue
-                        current_player.hand.pop(idx)
-                        current_player.equip(eq)
-                        if eq.name == "能量护盾":
-                            current_player.energy_shield_hp = 1
-                            print("  ⚡ 能量护盾：立即获得1点护盾！")
-
-                    elif card.card_type in ('dodge', 'omnishield'):
-                        print(f"⚠ 【{card.name}】只能在受到伤害/负面效果时使用！")
-                    else:
-                        print("这张牌暂时无法使用。")
-                else:
-                    print("无效的牌序号。")
-            except ValueError:
-                print("请输入数字、's'、'u'或'end'。")
-
-            if not opponent.is_alive():
-                if try_revive(opponent):
-                    pass
-                else:
-                    print(f"\n💀 {opponent.name} 阵亡！{current_player.name} 获胜！")
-                    return
-
-        # 回合结束
-        current_player.reduce_cooldowns()
-        current_player.on_turn_end()
-
-        # 枪手：回合结束时保存完整快照
-        if current_player.char_name == "枪手":
-            current_player.save_gunner_snapshot()
-            print(f"📸 {current_player.name} 保存回合快照（用于下次【时空回溯】）")
-
-        if duel_active and current_player.duel_turns > 0:
-            current_player.duel_turns -= 1
-            print(f"⚔ 决斗计数器（{current_player.name}）：剩余 {current_player.duel_turns} 轮")
-
-        if duel_active and p1.duel_turns == 0 and p2.duel_turns == 0:
-            print("\n⚔⚔⚔ 决斗3轮已到，无人阵亡，双方同归于尽！")
-            duel_active = False
-            p1_dead = trigger_duel_death(p1)
-            p2_dead = trigger_duel_death(p2)
-            if p1_dead and p2_dead:
-                print("\n💀💀 双方同时阵亡！平局！")
-                return
-            elif p1_dead:
-                print(f"\n💀 {p1.name} 阵亡！{p2.name} 获胜！")
-                return
-            elif p2_dead:
-                print(f"\n💀 {p2.name} 阵亡！{p1.name} 获胜！")
-                return
-            else:
-                print("\n⚔ 双方都用【全能盾牌】抵消了决斗死亡，游戏继续！")
-
-        current_player, opponent = opponent, current_player
-        turn += 1
+    def run(self):
+        # 覆盖 handle_msg，加入客户端动作处理
+        orig = self.handle_msg
+        def new_handle(msg):
+            if msg.get("type") in ("play", "skill", "end_turn", "answer") and self.role == "host":
+                self._handle_client_actions(msg); return
+            orig(msg)
+        self.handle_msg = new_handle
+        self.root.mainloop()
 
 if __name__ == "__main__":
-    game_loop()
+    LanGame().run()
