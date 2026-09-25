@@ -192,6 +192,7 @@ class LanGame:
         self.players = []; self.deck = []; self.turn_player_id = 0; self.turn = 1
         self.attack_cards_used = 0
         self.pending_ask = None
+        self.teams = {} # 阵营系统
         self.setup_ui()
         self.root.after(100, self.process_network)
         self.root.after(200, self.ask_mode)
@@ -216,9 +217,11 @@ class LanGame:
         self.frame_hand = hf; self.card_buttons = []
 
         af = tk.Frame(self.root, bg="#f0f0f0"); af.pack(pady=5)
-        tk.Button(af, text="技能", font=("微软雅黑", 11), width=8, command=self.action_skill).grid(row=0, column=0, padx=3)
-        tk.Button(af, text="装备", font=("微软雅黑", 11), width=8, command=self.action_view_equip).grid(row=0, column=1, padx=3)
-        tk.Button(af, text="结束回合", font=("微软雅黑", 11, "bold"), width=10, bg="#2ecc71", fg="white", command=self.action_end_turn).grid(row=0, column=2, padx=10)
+        self.btn_start = tk.Button(af, text="开始游戏", font=("微软雅黑", 11, "bold"), width=10, bg="#f39c12", fg="white", command=self.start_game_click, state="disabled")
+        self.btn_start.grid(row=0, column=0, padx=3)
+        tk.Button(af, text="技能", font=("微软雅黑", 11), width=8, command=self.action_skill).grid(row=0, column=1, padx=3)
+        tk.Button(af, text="装备", font=("微软雅黑", 11), width=8, command=self.action_view_equip).grid(row=0, column=2, padx=3)
+        tk.Button(af, text="结束回合", font=("微软雅黑", 11, "bold"), width=10, bg="#2ecc71", fg="white", command=self.action_end_turn).grid(row=0, column=3, padx=10)
 
     def log(self, msg):
         self.log_text.config(state='normal')
@@ -236,6 +239,7 @@ class LanGame:
             self.log(f"🏠 房间已创建！IP: {ip}:5000")
             self.log(f"👤 {self.my_name} (玩家1)")
             messagebox.showinfo("房间已创建", f"IP: {ip}\n请告诉其他玩家！")
+            self.btn_start.config(state="normal") # 主机初始就可点按钮
         else:
             self.role = "client"
             ip = simpledialog.askstring("加入", "主机 IP：")
@@ -254,9 +258,21 @@ class LanGame:
             total = 1 + len(self.net.clients)
             names = [self.my_name] + [n for c, n in self.net.clients]
             self.label_players.config(text="玩家列表 (" + str(total) + "/4):\n" + "\n".join(f"  {i+1}. {n}" for i, n in enumerate(names)))
-            if total == 4:
-                self.start_char_select(); return
+            # 动态更新按钮状态
+            if total >= 2 and not self.game_started:
+                self.btn_start.config(state="normal")
+            else:
+                self.btn_start.config(state="disabled")
+            self.net.broadcast_all({"type": "lobby_update", "names": names})
         self.root.after(500, self.check_lobby)
+
+    def start_game_click(self):
+        if self.role != "host": return
+        total = 1 + len(self.net.clients)
+        if total < 2 or total > 4:
+            messagebox.showwarning("提示", "人数必须在 2 到 4 人之间！")
+            return
+        self.start_char_select()
 
     def process_network(self):
         try:
@@ -276,8 +292,6 @@ class LanGame:
             for i, (c, n) in enumerate(self.net.clients):
                 if c == conn: self.net.clients[i] = (c, name); break
             self.log(f"👋 {name} 加入")
-            self.net.broadcast_all({"type": "lobby_update",
-                "names": [self.my_name] + [n for c, n in self.net.clients]})
         elif t == "lobby_update":
             names = msg["names"]
             self.label_players.config(text="玩家列表:\n" + "\n".join(f"  {i+1}. {n}" for i, n in enumerate(names)))
@@ -288,7 +302,7 @@ class LanGame:
         elif t == "pick_done":
             self.available_chars = msg["available"]; self.cur_select_idx = msg["idx"]
             self.log(f"✅ {msg['name']} 选了【{CHARACTERS[msg['cid']]['name']}】")
-            if self.cur_select_idx >= 4:
+            if self.cur_select_idx >= len(self.select_order):
                 self.net.broadcast_all({"type": "game_begin", "picks": self.picks})
                 self.begin_game(self.picks)
             else:
@@ -310,7 +324,8 @@ class LanGame:
 
     def start_char_select(self):
         if self.role != "host": return
-        order = list(range(4)); random.shuffle(order)
+        num_players = 1 + len(self.net.clients)
+        order = list(range(num_players)); random.shuffle(order)
         self.select_order = order; self.cur_select_idx = 0
         self.available_chars = list(CHARACTERS.keys()); self.picks = {}
         self.log(f"🎲 选人顺序: {[o+1 for o in order]}")
@@ -318,7 +333,8 @@ class LanGame:
         self.show_select()
 
     def show_select(self):
-        if self.cur_select_idx >= 4: return
+        num_players = len(self.select_order)
+        if self.cur_select_idx >= num_players: return
         if self.select_order[self.cur_select_idx] != self.my_id: return
         text = "\n".join([f"{k}. {CHARACTERS[k]['name']} HP{CHARACTERS[k]['hp']} 物攻{CHARACTERS[k]['atk']} 法攻{CHARACTERS[k]['matk']}"
                           for k in self.available_chars])
@@ -332,7 +348,7 @@ class LanGame:
         if self.role == "host":
             self.net.broadcast_all({"type": "pick_done", "available": self.available_chars,
                                     "idx": self.cur_select_idx, "name": self.my_name, "cid": cid})
-            if self.cur_select_idx >= 4:
+            if self.cur_select_idx >= num_players:
                 self.net.broadcast_all({"type": "game_begin", "picks": self.picks})
                 self.begin_game(self.picks)
             else:
@@ -344,20 +360,32 @@ class LanGame:
     def begin_game(self, picks):
         if self.game_started: return
         self.game_started = True
-        names = [self.my_name] + [n for c, n in self.net.clients]
+        num_players = len(picks)
         self.players = []
-        for i in range(4):
+        for i in range(num_players):
             cid = picks.get(str(i)) or picks.get(i)
             cd = CHARACTERS[cid]
             p = Player(i, f"P{i+1}-{cd['name']}", cd)
             self.players.append(p)
+            
+        # 阵营分配
+        self.teams = {}
+        if num_players == 2:
+            self.teams = {0: 1, 1: 2} # 1v1
+        elif num_players == 3:
+            self.teams = {0: 1, 1: 2, 2: 3} # 三方混战
+        elif num_players == 4:
+            self.teams = {0: 1, 1: 1, 2: 2, 3: 2} # 2v2 组队
+            
         self.deck = self.make_deck()
         for _ in range(3):
             for p in self.players:
                 if self.deck: p.draw_card(self.deck.pop())
-        self.turn_player_id = random.randint(0, 3)
+        self.turn_player_id = random.randint(0, num_players-1)
         self.turn = 1
         self.log(f"🎮 游戏开始！先手：玩家{self.turn_player_id+1}")
+        if num_players == 4:
+            self.log(f"👥 阵营分配：玩家1&2 为一队，玩家3&4 为一队")
         self.refresh_ui()
         self.broadcast_state()
 
@@ -384,7 +412,8 @@ class LanGame:
         for p in self.players:
             if p.pid == self.my_id: continue
             status = "☠" if not p.alive else f"HP {p.hp}/{p.max_hp}"
-            lines.append(f"P{p.pid+1}-{p.char_name}: {status} 装备{len(p.equipment)}")
+            team_tag = "🟢" if self.teams.get(p.pid) == self.teams.get(self.my_id) else "🔴"
+            lines.append(f"{team_tag} P{p.pid+1}-{p.char_name}: {status} 装备{len(p.equipment)}")
         self.label_players.config(text="\n".join(lines))
         if self.my_id < len(self.players):
             me = self.players[self.my_id]
@@ -408,16 +437,15 @@ class LanGame:
 
     def sync_state(self, state):
         for i, pd in enumerate(state):
+            if i >= len(self.players): break
             p = self.players[i]
             p.hp = pd["hp"]; p.max_hp = pd["max_hp"]; p.atk = pd["atk"]; p.matk = pd["matk"]
             p.alive = pd["alive"]; p.poison_turns = pd["poison_turns"]; p.burn_turns = pd["burn_turns"]
             p.equipment = [Equipment(n) for n in pd["equipment"]]
             if "hand" in pd: p.hand = [Card.from_dict(c) for c in pd["hand"]]
-        self.turn_player_id = state[0].get("_turn", self.turn_player_id) if False else self.turn_player_id
         self.refresh_ui()
 
     def ask_player(self, target_id, prompt, options):
-        """主机询问某个玩家（本地或远程）"""
         if target_id == self.my_id:
             text = prompt + "\n\n" + "\n".join(f"{i+1}. {o}" for i, o in enumerate(options))
             c = simpledialog.askinteger("选择", text, minvalue=1, maxvalue=len(options))
@@ -437,7 +465,7 @@ class LanGame:
         idx = (c - 1) if c else 0
         self.net.send(self.net.sock, {"type": "answer", "index": idx})
 
-    # ---------- 游戏动作（主机权威） ----------
+    # ---------- 游戏动作 ----------
     def play_card(self, card, idx):
         if not self.game_started: return
         if self.turn_player_id != self.my_id:
@@ -445,26 +473,23 @@ class LanGame:
         if self.role == "client":
             self.net.send(self.net.sock, {"type": "play", "card": card.to_dict(), "idx": idx})
             return
-        # 主机处理
         self.host_play(self.my_id, card, idx)
 
     def host_play(self, pid, card, idx):
         p = self.players[pid]
+        # 筛选敌人
+        enemies = [q for q in self.players if q.alive and self.teams[q.pid] != self.teams[pid]]
         if card.card_type in ("attack", "physical", "magic"):
-            # 选目标
-            alive = [q for q in self.players if q.alive and q.pid != pid]
-            if not alive: return
-            options = [f"P{q.pid+1}-{q.char_name}" for q in alive]
+            if not enemies: return
+            options = [f"P{q.pid+1}-{q.char_name}" for q in enemies]
             t_idx = self.ask_player(pid, "选择目标:", options)
-            target = alive[t_idx]
-            # 计算伤害
+            target = enemies[t_idx]
             dmg = card.value if card.card_type == "attack" else (p.atk if card.card_type == "physical" else p.matk)
             if card.card_type == "attack":
                 if p.has_equipment("剑匣") or (p.char_name == "枪手" and p.has_equipment("双枪")): dmg += 1
             if p.double_attack_left > 0: dmg *= 2; p.double_attack_left -= 1
             if p.damage_double_turn: dmg *= 2
             if sum(1 for e in p.equipment if e.name == "机械猎犬") and random.random() < 1/3: dmg += 1
-            # 防御响应
             t_dmg = self.apply_damage(target, dmg, p, card.card_type)
             self.broadcast_log(f"⚔ {p.name} 对 {target.name} 造成 {t_dmg} 伤害")
             p.hand.pop(idx)
@@ -474,11 +499,10 @@ class LanGame:
         elif card.card_type == "rage":
             p.damage_double_turn = True; p.hand.pop(idx); self.broadcast_log(f"🔥 {p.name} 狂暴剂")
         elif card.card_type == "anesthetic":
-            alive = [q for q in self.players if q.alive and q.pid != pid]
-            if not alive: return
-            t_idx = self.ask_player(pid, "麻醉谁?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
-            alive[t_idx].skip_full_turn = True; p.hand.pop(idx)
-            self.broadcast_log(f"💉 {p.name} 麻醉 {alive[t_idx].name}")
+            if not enemies: return
+            t_idx = self.ask_player(pid, "麻醉谁?", [f"P{q.pid+1}-{q.char_name}" for q in enemies])
+            enemies[t_idx].skip_full_turn = True; p.hand.pop(idx)
+            self.broadcast_log(f"💉 {p.name} 麻醉 {enemies[t_idx].name}")
         elif card.card_type == "meditate":
             p.hand.pop(idx)
             cnt = 0
@@ -486,19 +510,19 @@ class LanGame:
                 if self.deck and p.draw_card(self.deck.pop()): cnt += 1
             self.broadcast_log(f"📖 {p.name} 沉思摸 {cnt} 张")
         elif card.card_type == "dismantle":
-            alive = [q for q in self.players if q.alive and q.pid != pid and q.equipment]
-            if not alive: self.broadcast_log("⚠ 无目标"); return
-            t_idx = self.ask_player(pid, "拆谁的装备?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
-            target = alive[t_idx]
+            targets = [q for q in enemies if q.equipment]
+            if not targets: self.broadcast_log("⚠ 无目标"); return
+            t_idx = self.ask_player(pid, "拆谁的装备?", [f"P{q.pid+1}-{q.char_name}" for q in targets])
+            target = targets[t_idx]
             eq_options = [f"{e.name}" for e in target.equipment]
             eq_idx = self.ask_player(pid, "拆哪件?", eq_options)
             target.equipment.pop(eq_idx); target.recalc_stats(); p.hand.pop(idx)
             self.broadcast_log(f"🔨 {p.name} 拆除 {target.name} 的装备")
         elif card.card_type == "steal":
-            alive = [q for q in self.players if q.alive and q.pid != pid and q.equipment]
-            if not alive: self.broadcast_log("⚠ 无目标"); return
-            t_idx = self.ask_player(pid, "抢谁的装备?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
-            target = alive[t_idx]
+            targets = [q for q in enemies if q.equipment]
+            if not targets: self.broadcast_log("⚠ 无目标"); return
+            t_idx = self.ask_player(pid, "抢谁的装备?", [f"P{q.pid+1}-{q.char_name}" for q in targets])
+            target = targets[t_idx]
             eq_idx = self.ask_player(pid, "抢哪件?", [e.name for e in target.equipment])
             eq = target.equipment[eq_idx]
             if p.can_equip(eq):
@@ -514,24 +538,21 @@ class LanGame:
                 self.broadcast_log(f"⚙ {p.name} 装备 {eq.name}")
             else: self.broadcast_log("⚠ 装备栏满")
         elif card.card_type == "duel":
-            alive = [q for q in self.players if q.alive and q.pid != pid]
-            if not alive: return
-            t_idx = self.ask_player(pid, "决斗谁?", [f"P{q.pid+1}-{q.char_name}" for q in alive])
-            t = alive[t_idx]; p.duel_turns = 3; t.duel_turns = 3
+            if not enemies: return
+            t_idx = self.ask_player(pid, "决斗谁?", [f"P{q.pid+1}-{q.char_name}" for q in enemies])
+            t = enemies[t_idx]; p.duel_turns = 3; t.duel_turns = 3
             p.hand.pop(idx)
             self.broadcast_log(f"⚔ {p.name} 与 {t.name} 决斗！")
         self.broadcast_state()
         self.check_end()
 
     def apply_damage(self, target, dmg, attacker, damage_type):
-        # 罪罚锁狱
         if target.transfer_active:
             for q in self.players:
-                if q.alive and q.pid != target.pid:
+                if q.alive and self.teams[q.pid] != self.teams[target.pid]:
                     q.hp -= dmg
                     self.broadcast_log(f"⚖ 伤害转移到 {q.name}")
                     return 0
-        # 幽灵马车 / 重甲犀牛 / 防弹背心
         if damage_type in ("attack", "magic") and target.carriage_buff:
             dmg = max(0, dmg - 1); target.carriage_buff = False
         if damage_type == "physical" and target.has_equipment("防弹背心") and not target.vest_used_this_turn:
@@ -540,12 +561,10 @@ class LanGame:
             dmg = max(0, dmg - 1); target.rhino_shield_available = False
         if sum(1 for e in target.equipment if e.name == "飞行滑板") and random.random() < 1/3:
             self.broadcast_log(f"🛹 {target.name} 滑板闪避"); return 0
-        # 能量护盾
         if target.energy_shield_hp > 0:
             absorb = min(target.energy_shield_hp, dmg)
             target.energy_shield_hp -= absorb; dmg -= absorb
         if dmg <= 0: return 0
-        # 询问防御
         options = []
         if target.dodge_tokens > 0: options.append(("token", "快刺闪避"))
         for sid, sk in target.char_data["skills"].items():
@@ -580,12 +599,11 @@ class LanGame:
         if self.role == "host": self.net.broadcast_all({"type": "log", "text": text})
 
     def check_end(self):
-        alive = [p for p in self.players if p.hp > 0]
-        for p in self.players:
-            if p.hp <= 0: p.alive = False
-        if len(alive) <= 1:
-            winner = alive[0].name if alive else "无人"
-            txt = f"🏆 {winner} 获胜！"
+        alive_teams = set(self.teams[p.pid] for p in self.players if p.alive)
+        if len(alive_teams) <= 1:
+            winner_team = list(alive_teams)[0] if alive_teams else None
+            winners = [p.name for p in self.players if p.alive and self.teams[p.pid] == winner_team]
+            txt = f"🏆 阵营 {winner_team} 获胜！({', '.join(winners)})" if winners else "平局！"
             self.log(txt)
             if self.role == "host": self.net.broadcast_all({"type": "game_over", "text": txt})
             messagebox.showinfo("游戏结束", txt)
@@ -609,16 +627,25 @@ class LanGame:
         p = self.players[pid]
         name = p.char_data["skills"][sid]["name"]
         cd = p.char_data["skills"][sid]["cd"]
-        # 简化：只做伤害/回复/控制类
-        alive = [q for q in self.players if q.alive and q.pid != pid]
-        if name in ("噬血",):
-            if alive: alive[0].hp -= 1; p.hp = min(p.max_hp, p.hp+1)
+        enemies = [q for q in self.players if q.alive and self.teams[q.pid] != self.teams[pid]]
+        
+        # ---- 冷锋大招特殊处理：浮游炮 2点法术伤害，无视防御 ----
+        if name == "浮游炮":
+            if enemies:
+                t_idx = self.ask_player(pid, "浮游炮打谁?", [f"P{q.pid+1}-{q.char_name}" for q in enemies])
+                target = enemies[t_idx]
+                target.hp -= 2
+                self.broadcast_log(f"💥 {p.name} 使用【浮游炮】，对 {target.name} 造成 2 点法术伤害（无视防御）！")
+            p.cooldowns[sid] = cd
+            self.broadcast_state(); self.check_end(); return
+        # ---------------------------------------------------
+        
+        if name == "噬血":
+            if enemies: enemies[0].hp -= 1; p.hp = min(p.max_hp, p.hp+1)
         elif name in ("猎击", "剑击", "火焰灼烧", "锐击"):
-            for q in alive: q.hp -= 2
+            for q in enemies: q.hp -= 2
         elif name in ("速击", "突刺", "激光"):
-            if alive: alive[0].hp -= 1
-        elif name in ("浮游炮",):
-            if alive: alive[0].hp -= 3
+            if enemies: enemies[0].hp -= 1
         elif name in ("固本", "愈护", "急救"):
             p.hp = min(p.max_hp, p.hp+1)
         elif name == "坚韧蜕变": p.base_max_hp += 1; p.base_atk += 1; p.recalc_stats()
@@ -626,14 +653,14 @@ class LanGame:
         elif name == "狂击增幅": p.double_attack_left = 2
         elif name == "战威增幅": p.damage_double_turn = True
         elif name in ("电击眩晕", "禁锢射击", "锁滞"):
-            if alive: alive[0].skip_next_turn = True
+            if enemies: enemies[0].skip_next_turn = True
         elif name == "腐毒侵蚀":
-            if alive: alive[0].poison_turns = 3
+            if enemies: enemies[0].poison_turns = 3
         elif name == "焚身灼烧":
-            if alive: alive[0].burn_turns = 3
+            if enemies: enemies[0].burn_turns = 3
         elif name == "迟滞弹":
             for q in self.players:
-                if q.pid != pid:
+                if self.teams[q.pid] != self.teams[pid]:
                     for k in q.cooldowns:
                         if q.cooldowns[k] > 0: q.cooldowns[k] += 2
         elif name == "速愈调度":
@@ -672,12 +699,13 @@ class LanGame:
         p.transfer_active = False; p.extra_attack_tokens = 0
         p.immune_turn = False; p.damage_double_turn = False; p.meditate_used_this_turn = False
         p.vest_used_this_turn = False; p.attacked_this_turn = False
-        # 下一个回合
-        self.turn_player_id = (self.turn_player_id + 1) % 4
+        
+        num_players = len(self.players)
+        self.turn_player_id = (self.turn_player_id + 1) % num_players
         while not self.players[self.turn_player_id].alive:
-            self.turn_player_id = (self.turn_player_id + 1) % 4
+            self.turn_player_id = (self.turn_player_id + 1) % num_players
         self.turn += 1
-        # 摸牌
+        
         p = self.players[self.turn_player_id]
         cnt = 3 if len(p.hand) == 0 else (1 if p.skip_next_turn or p.skip_full_turn else 2)
         if p.skip_full_turn:
@@ -689,23 +717,20 @@ class LanGame:
         drawn = 0
         for _ in range(cnt):
             if self.deck and p.draw_card(self.deck.pop()): drawn += 1
-        # 中毒/灼烧结算
         if p.poison_turns > 0: p.hp -= 1; p.poison_turns -= 1
         if p.burn_turns > 0: p.hp -= 1; p.burn_turns -= 1
         if p.has_equipment("能量护盾") and p.energy_shield_hp == 0: p.energy_shield_hp = 1
         self.broadcast_log(f"--- 第{self.turn}回合：{p.name} 摸 {drawn} 张 ---")
         self.broadcast_state()
         self.check_end()
-        # 如果当前是主机自己，刷新 UI
         if self.turn_player_id == self.my_id: self.refresh_ui()
 
-    # 客户端发送/主机接收
     def _handle_client_actions(self, msg):
         t = msg.get("type")
         if self.role != "host": return
         if t == "play":
             card = Card.from_dict(msg["card"]); idx = msg["idx"]
-            self.host_play(self.my_id if False else self._client_pid(msg["_from_conn"]), card, idx)
+            self.host_play(self._client_pid(msg["_from_conn"]), card, idx)
         elif t == "skill":
             pid = self._client_pid(msg["_from_conn"])
             self.host_skill(pid, msg["sid"])
@@ -722,7 +747,6 @@ class LanGame:
         return 0
 
     def run(self):
-        # 覆盖 handle_msg，加入客户端动作处理
         orig = self.handle_msg
         def new_handle(msg):
             if msg.get("type") in ("play", "skill", "end_turn", "answer") and self.role == "host":
@@ -733,3 +757,4 @@ class LanGame:
 
 if __name__ == "__main__":
     LanGame().run()
+    
